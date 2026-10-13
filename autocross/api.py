@@ -51,7 +51,8 @@ class VehicleParams:
 @dataclass
 class TrackInfo:
     """Prior map. Only populated with ``track_knowledge: full`` (practice / debugging). Under
-    the event setting ``perception`` every array is empty: use ``Observation.road``."""
+    the event setting ``perception`` every array is empty and ``name`` is just "course": use
+    ``Observation.road``."""
     name: str
     closed: bool
     laps: int

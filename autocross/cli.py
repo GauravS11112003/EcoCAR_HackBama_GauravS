@@ -107,12 +107,16 @@ def cmd_gen_track(a):
     from . import trackgen
     from .plot import preview_track
     from .track import build, save
+    seed = a.seed
+    if seed is None:  # secret course: the seed is never shown or stored, so nobody can regenerate it
+        import secrets
+        seed = secrets.randbits(48)
     if a.closed:
-        spec = trackgen.generate_closed(a.seed, a.length or 600.0, a.width or 6.0, a.laps, a.obstacles)
+        spec = trackgen.generate_closed(seed, a.length or 600.0, a.width or 6.0, a.laps, a.obstacles)
     else:
-        spec = trackgen.generate_open(a.seed, a.length or 700.0, a.width or 5.5, n_obstacles=a.obstacles)
-    if a.name:
-        spec["name"] = a.name
+        spec = trackgen.generate_open(seed, a.length or 700.0, a.width or 5.5, n_obstacles=a.obstacles)
+    if a.name or a.seed is None:
+        spec["name"] = a.name or Path(a.out).stem
     save(spec, a.out)
     t = build(spec)
     print(f"wrote {a.out}: {t.length:.0f} m, {len(t.cones)} cones, {len(t.obstacle_cones)} obstacle cones")
@@ -225,7 +229,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_leaderboard)
 
     p = sub.add_parser("gen-track", help="generate a random valid course from a seed")
-    p.add_argument("--seed", type=int, required=True)
+    p.add_argument("--seed", type=int, help="omit for a secret random course (evaluation courses)")
     p.add_argument("--out", required=True)
     p.add_argument("--closed", action="store_true")
     p.add_argument("--laps", type=int, default=2)

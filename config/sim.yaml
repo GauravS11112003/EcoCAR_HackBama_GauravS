@@ -17,9 +17,12 @@ carla:
   render: true                # false = no_rendering_mode (fastest, for batch scoring)
   spectator: chase            # chase | none
   draw_path: true             # draw Command.path in the 3D view
+  pad_margin_m: 500           # the asphalt pad extends this far past the course so the ground reaches the horizon
+  paint_lines: true           # draw the start (green) and finish (chequered) lines on the pad
   spawn_cones: true
-  cone_blueprint: static.prop.constructioncone     # boundary cones
-  marker_cone_blueprint: static.prop.trafficcone01 # start/finish markers and unmapped obstacles (drums)
+  cone_blueprint: static.prop.constructioncone          # boundary cones
+  marker_cone_blueprint: static.prop.constructioncone   # start/finish line markers
+  obstacle_cone_blueprint: static.prop.constructioncone # unmapped obstacle cones
   cone_physics: true          # cones can be knocked over (scoring uses surveyed positions)
   weather: ClearNoon
   record: false               # CARLA recorder log for 3D replay (saved on the server side)
@@ -93,6 +96,10 @@ compute_budget:
   memory_mb: 1024
   allow_gpu: false
   hard_timeout_s: 10
+
+sandbox:
+  protected_paths: [tracks, runs]   # controllers cannot open these (relative to the repo root), nor the
+                                    # course being driven: keeps evaluation maps and earlier runs off limits
 
 rules:
   off_course_rule: all_wheels # center | any_wheel | all_wheels (SCCA: all four wheels out)

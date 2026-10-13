@@ -1,7 +1,7 @@
 # Robustness sweep used by `python -m autocross batch`. Every course is run under every
 # perturbation set for every seed. Keys are documented in autocross/config.py (PERTURBATION_KEYS).
 tracks:
-  - tracks/practice_basic.yaml
+  - tracks/hackathon_test.yaml
   - tracks/practice_loop.yaml
 seeds: [0, 1]
 overrides:

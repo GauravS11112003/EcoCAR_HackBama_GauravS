@@ -107,6 +107,6 @@ def _obstacles(rng, t, n) -> list:
         wl, wr = t.width_at(t.s_of_progress(float(s)))
         side = float(rng.choice([-1.0, 1.0]))
         w = float(rng.uniform(1.2, 2.0))
-        off = side * ((wl if side > 0 else wr) - w / 2)
+        off = side * ((wl if side > 0 else wr) - w / 2 - 0.3)  # outer cone just inside the boundary line
         out.append({"s": round(float(t.s_of_progress(float(s))), 1), "offset": round(off, 2), "width": round(w, 2)})
     return out

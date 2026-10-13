@@ -23,6 +23,18 @@ def test_baseline_closed_course(cfg, root, tmp_path):
     assert len(s["metrics"]["completion"]["lap_times_s"]) == 2
 
 
+def test_baseline_finishes_test_course(cfg, root, tmp_path):
+    s = _run(cfg, root, root / "controllers" / "baseline_pure_pursuit.py", tmp_path, track="hackathon_test")
+    assert s["metrics"]["completion"]["finished"]
+    assert s["metrics"]["penalties"]["off_course"] == 0 and s["metrics"]["penalties"]["missed_gate"] == 0
+
+
+def test_controller_cannot_read_course_files(cfg, root, tmp_path):
+    s = _run(cfg, root, root / "tests" / "controllers" / "snoop_controller.py", tmp_path)
+    assert s["metrics"]["completion"]["dnf_reason"] == "controller_error"
+    assert "may not access course or run files" in s["controller_error"]
+
+
 def test_event_mode_gives_no_map(cfg, root, tmp_path):
     assert cfg["track_knowledge"] == "perception"  # EIC rules are the default
     s = _run(cfg, root, root / "tests" / "controllers" / "probe_controller.py", tmp_path)

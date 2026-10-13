@@ -8,6 +8,10 @@ Budget enforcement (``compute_budget.mode``):
 Independently of mode, the process is pinned to ``cpu_cores`` logical cores, BLAS/OpenMP
 thread pools are limited to that count, CUDA devices are hidden unless ``allow_gpu``, and
 CPU time and peak memory are sampled.
+
+The controller may not open course files or earlier run outputs (``sandbox.protected_paths``
+plus the course being driven): a Python audit hook in the controller process refuses them,
+so an evaluation course cannot be read from disk.
 """
 from __future__ import annotations
 
@@ -50,8 +54,31 @@ def load_controller_class(path: str, class_name: str | None = None):
     return found[0]
 
 
-def _worker(conn, path, class_name, ctrl_cfg):
+def _install_file_guard(protected: list[str]) -> None:
+    """Refuse open/listdir/scandir on the protected files and directories. Audit hooks cannot be
+    removed, so this holds for the life of the controller process."""
+    roots = [os.path.normcase(os.path.abspath(p)) for p in protected]
+    if not roots:
+        return
+    events = {"open", "os.listdir", "os.scandir"}
+
+    def hook(event, args):
+        if event not in events or not args or not isinstance(args[0], (str, bytes, os.PathLike)):
+            return
+        try:
+            p = os.path.normcase(os.path.abspath(os.fsdecode(args[0])))
+        except (TypeError, ValueError):
+            return
+        for r in roots:
+            if p == r or p.startswith(r.rstrip(os.sep) + os.sep):
+                raise PermissionError(f"controllers may not access course or run files: {os.fsdecode(args[0])}")
+
+    sys.addaudithook(hook)
+
+
+def _worker(conn, path, class_name, ctrl_cfg, protected=()):
     try:
+        _install_file_guard(list(protected))
         cls = load_controller_class(path, class_name)
         ctrl = cls(ctrl_cfg)
         conn.send(("ready", 0, None, 0.0, 0.0))
@@ -83,7 +110,8 @@ def _worker(conn, path, class_name, ctrl_cfg):
 
 
 class ControllerProcess:
-    def __init__(self, path: str, budget: dict, class_name: str | None = None, ctrl_cfg: dict | None = None):
+    def __init__(self, path: str, budget: dict, class_name: str | None = None, ctrl_cfg: dict | None = None,
+                 protected_paths: list[str] | None = None):
         self.budget = budget
         self.mode = str(budget.get("mode", "enforce"))
         self.deadline = float(budget.get("step_deadline_ms", 50.0)) / 1e3
@@ -101,7 +129,8 @@ class ControllerProcess:
         saved = {k: os.environ.get(k) for k in env_overrides}
         os.environ.update(env_overrides)
         try:
-            self.proc = ctx.Process(target=_worker, args=(child, path, class_name, ctrl_cfg or {}), daemon=True)
+            self.proc = ctx.Process(target=_worker, args=(child, path, class_name, ctrl_cfg or {},
+                                                          [str(p) for p in protected_paths or []]), daemon=True)
             self.proc.start()
         finally:
             for k, v in saved.items():

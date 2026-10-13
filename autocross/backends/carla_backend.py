@@ -1,5 +1,6 @@
 """CARLA backend. Builds a flat asphalt pad from a generated OpenDRIVE road sized to the
-course, lays physics-enabled cones, and steps the world in synchronous mode.
+course (with a wide margin so the ground reaches the horizon), lays physics-enabled cones,
+paints the start/finish lines, and steps the world in synchronous mode.
 
 Frame conversion: the harness uses right-handed ENU; CARLA is left-handed (y right, yaw
 clockwise, degrees). OpenDRIVE shares the ENU convention, so pad coordinates need no
@@ -14,6 +15,7 @@ import time
 import numpy as np
 
 from ..api import CONE_ORANGE
+from ..track import MARKER_OFFSETS
 from .base import Backend, PhysicalParams, VehicleState
 
 try:
@@ -56,6 +58,8 @@ class CarlaBackend(Backend):
         self.world = None
         self.vehicle = None
         self.cone_ids: list[int] = []
+        self.cone_home: dict = {}
+        self.lines: list = []
         self._sync_set = False
         self.cmd = carla.VehicleControl()
         self.recording = False
@@ -76,7 +80,7 @@ class CarlaBackend(Backend):
 
     # ------------------------------------------------------------------ world
     def _ensure_pad(self, track):
-        margin = float(self.cfg.get("pad_margin_m", 40.0))
+        margin = float(self.cfg.get("pad_margin_m", 500.0))
         x0, y0, x1, y1 = track.bounds(margin)
         L, hw, yc = max(x1 - x0, 150.0), max((y1 - y0) / 2, 75.0), (y0 + y1) / 2
         key = hashlib.sha1(f"{x0:.1f},{L:.1f},{yc:.1f},{hw:.1f}".encode()).hexdigest()[:10]
@@ -128,16 +132,20 @@ class CarlaBackend(Backend):
         bl = w.get_blueprint_library()
         # cones (visual + physical); scoring uses their surveyed positions, not the actors
         if self.cfg.get("spawn_cones", True):
-            pos, col, _ = track.all_cones()
+            pos, col, mapped = track.all_cones()
             bp_lane = bl.find(self.cfg.get("cone_blueprint", "static.prop.constructioncone"))
-            bp_orange = bl.find(self.cfg.get("marker_cone_blueprint", "static.prop.trafficcone01"))
-            batch = [carla.command.SpawnActor(bp_orange if c == CONE_ORANGE else bp_lane,
-                                              to_carla(p[0], p[1], float(rng.uniform(-math.pi, math.pi)), 0.05))
-                     for p, c in zip(pos, col)]
-            res = self.client.apply_batch_sync(batch, False)
-            self.cone_ids = [r.actor_id for r in res if not r.error]
+            bp_marker = bl.find(self.cfg.get("marker_cone_blueprint", "static.prop.constructioncone"))
+            bp_obstacle = bl.find(self.cfg.get("obstacle_cone_blueprint", "static.prop.constructioncone"))
+            tfs = [to_carla(p[0], p[1], float(rng.uniform(-math.pi, math.pi)), 0.05) for p in pos]
+            bps = [bp_lane if c != CONE_ORANGE else (bp_marker if m else bp_obstacle) for c, m in zip(col, mapped)]
+            res = self.client.apply_batch_sync([carla.command.SpawnActor(b, tf) for b, tf in zip(bps, tfs)], False)
+            self.cone_home = {r.actor_id: tf for r, tf in zip(res, tfs) if not r.error}
+            self.cone_ids = list(self.cone_home)
+            if len(self.cone_ids) < len(pos):
+                print(f"[carla] WARNING: {len(pos) - len(self.cone_ids)} of {len(pos)} cones failed to spawn")
             if self.cfg.get("cone_physics", True):
                 self.client.apply_batch_sync([carla.command.SetSimulatePhysics(i, True) for i in self.cone_ids], False)
+        self.lines = self._line_marks(track) if self.cfg.get("paint_lines", True) else []
         # vehicle
         bp = bl.find(vehicle_cfg.get("blueprint", "vehicle.tesla.model3"))
         if bp.has_attribute("role_name"):
@@ -185,16 +193,76 @@ class CarlaBackend(Backend):
         return PhysicalParams(float(pc.mass), wheelbase, track_w, 2 * bb.extent.x, 2 * bb.extent.y,
                               cg_to_front, wheelbase - cg_to_front, math.radians(max_steer))
 
+    @staticmethod
+    def _line_marks(track):
+        """Painted start (green) and finish (chequered) lines as (a, b, colour) segments in ENU,
+        spanning the corridor out to the marker posts. A closed course has one chequered line."""
+        out = []
+        marks = [(track.start_progress, "start")]
+        if not track.closed:
+            marks.append((track.finish_progress, "finish"))
+        ext = MARKER_OFFSETS[-1] + 0.3
+        for prog, kind in marks:
+            ln = track.cross_line(track.s_of_progress(prog))
+            d = (ln[0] - ln[1]) / max(float(np.linalg.norm(ln[0] - ln[1])), 1e-9)
+            a, b = ln[1] - d * ext, ln[0] + d * ext
+            if kind == "start" and not track.closed:
+                out.append((a, b, carla.Color(0, 24, 6)))
+                continue
+            n = max(int(np.linalg.norm(b - a) / 0.6), 2)
+            for i in range(n):
+                col = carla.Color(18, 18, 18) if i % 2 == 0 else carla.Color(0, 0, 0)
+                out.append((a + (b - a) * i / n, a + (b - a) * (i + 1) / n, col))
+        return out
+
+    def _paint_lines(self):
+        if not self.render or not self.lines:
+            return
+        dbg = self.world.debug
+        for a, b, col in self.lines:  # life time counts simulation time; redrawn every second
+            dbg.draw_line(carla.Location(float(a[0]), float(-a[1]), 0.02), carla.Location(float(b[0]), float(-b[1]), 0.02),
+                          thickness=0.35, color=col, life_time=1.25)
+        self._painted_at = self.world.get_snapshot().timestamp.elapsed_seconds
+
+    def _restore_cones(self):
+        """Put back any cone the spawn disturbed, so the course on screen matches the surveyed
+        layout used for scoring."""
+        if not self.cone_home:
+            return
+        snap = self.world.get_snapshot()
+        moved = []
+        for cid, home in self.cone_home.items():
+            a = snap.find(cid)
+            if a is None:
+                continue
+            tr = a.get_transform()
+            if (math.hypot(tr.location.x - home.location.x, tr.location.y - home.location.y) > 0.15
+                    or abs(tr.rotation.pitch) > 20 or abs(tr.rotation.roll) > 20):
+                moved.append(cid)
+        if not moved:
+            return
+        cmds = [carla.command.SetSimulatePhysics(i, False) for i in moved]
+        cmds += [carla.command.ApplyTransform(i, self.cone_home[i]) for i in moved]
+        self.client.apply_batch_sync(cmds, False)
+        self.world.tick()
+        if self.cfg.get("cone_physics", True):
+            self.client.apply_batch_sync([carla.command.SetSimulatePhysics(i, True) for i in moved], False)
+        print(f"[carla] {len(moved)} cone(s) were displaced at spawn and have been put back")
+
     # ------------------------------------------------------------------ stepping
     def reset(self, x, y, yaw) -> VehicleState:
         self.vehicle.set_transform(to_carla(x, y, yaw, 0.3))
         self.vehicle.set_target_velocity(carla.Vector3D())
         self.vehicle.set_target_angular_velocity(carla.Vector3D())
         self.vehicle.apply_control(carla.VehicleControl(brake=1.0))
-        for _ in range(int(1.0 / self.dt)):  # let the suspension settle
+        for _ in range(int(1.0 / self.dt)):  # let the suspension and the cones settle
+            self.world.tick()
+        self._restore_cones()
+        for _ in range(int(0.25 / self.dt)):
             self.world.tick()
         self.t0 = self.world.get_snapshot().timestamp.elapsed_seconds
         self._update_spectator()
+        self._paint_lines()
         return self._state()
 
     def apply(self, steer, throttle, brake):
@@ -204,7 +272,10 @@ class CarlaBackend(Backend):
     def tick(self) -> VehicleState:
         self.world.tick()
         self._update_spectator()
-        return self._state()
+        st = self._state()
+        if self.lines and st.t + self.t0 - getattr(self, "_painted_at", -1e9) >= 1.0:
+            self._paint_lines()
+        return st
 
     def _state(self) -> VehicleState:
         snap = self.world.get_snapshot()
@@ -241,7 +312,7 @@ class CarlaBackend(Backend):
         step = max(len(path) // 25, 1)
         p = path[::step]
         dbg = self.world.debug
-        col = carla.Color(0, 200, 255)
+        col = carla.Color(0, 45, 60)  # debug lines are emissive: bright colours bloom
         for a, b in zip(p[:-1], p[1:]):
             dbg.draw_line(carla.Location(float(a[0]), float(-a[1]), 0.15), carla.Location(float(b[0]), float(-b[1]), 0.15),
                           thickness=0.08, color=col, life_time=life)

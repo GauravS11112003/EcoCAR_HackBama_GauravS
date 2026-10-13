@@ -10,6 +10,8 @@ from .api import CONE_LEFT, CONE_RIGHT
 from .geometry import body_to_world
 
 COLORS = {CONE_LEFT: (40, 100, 230), CONE_RIGHT: (235, 190, 0)}
+GROUND, GRID, SURFACE, EDGE = (46, 50, 46), (58, 63, 58), (84, 86, 92), (110, 112, 118)
+GRID_M = 10.0
 
 
 class TopDownViewer:
@@ -26,6 +28,18 @@ class TopDownViewer:
         self.vl, self.vw = vehicle_len, vehicle_wid
         self.trail: list = []
         self.cones, self.colors, self.mapped = track.all_cones()
+        # course surface as quads between the boundaries (~2 m long), drawn over the ground grid
+        k = 4
+        idx = np.arange(0, len(track.center), k)
+        if track.closed:
+            idx = np.append(idx, 0)
+        elif idx[-1] != len(track.center) - 1:
+            idx = np.append(idx, len(track.center) - 1)
+        L, R = track.left[idx], track.right[idx]
+        self.quads = np.stack((L[:-1], L[1:], R[1:], R[:-1]), axis=1)  # (Q, 4, 2)
+        marks = [(track.start_progress, (245, 245, 245))] if not track.closed else []
+        marks.append((track.finish_progress if not track.closed else track.start_progress, (245, 245, 245)))
+        self.lines = [(track.cross_line(track.s_of_progress(p)), col) for p, col in marks]
 
     def _px(self, pts, cx, cy):
         p = (np.atleast_2d(pts) - (cx, cy)) * self.zoom
@@ -46,10 +60,8 @@ class TopDownViewer:
                 self.zoom = float(np.clip(self.zoom * (1.15 ** ev.y), 1.0, 30.0))
         self.trail.append((st.x, st.y))
         s = self.screen
-        s.fill((60, 62, 66))
         cx, cy = st.x, st.y
-        for b in (self.track.left, self.track.right):
-            pg.draw.lines(s, (95, 97, 102), self.track.closed, self._px(b, cx, cy).tolist(), 1)
+        self._draw_floor(cx, cy)
         cp = self._px(self.cones, cx, cy)
         vis = (cp[:, 0] > -10) & (cp[:, 0] < self.size[0] + 10) & (cp[:, 1] > -10) & (cp[:, 1] < self.size[1] + 10)
         for (px, py), c, hit, mp in zip(cp[vis], self.colors[vis], monitor.cone_hit[vis], self.mapped[vis]):
@@ -77,10 +89,35 @@ class TopDownViewer:
                  + ("   OFF COURSE" if monitor.off else "") + (f"   DNF: {monitor.dnf}" if monitor.dnf else ""),
                  f"yaw rate {math.degrees(st.yaw_rate):6.1f} deg/s   ay {st.ay:5.2f} m/s^2   (mouse wheel = zoom, Esc = abort)",
                  _road_text(road)]
+        hud = pg.Surface((int(self.size[0]), 14 + 20 * len(lines)), pg.SRCALPHA)
+        hud.fill((20, 22, 20, 170))
+        s.blit(hud, (0, 0))
         for i, ln in enumerate(lines):
-            s.blit(self.font.render(ln, True, (240, 240, 240)), (10, 10 + 20 * i))
+            s.blit(self.font.render(ln, True, (240, 240, 240)), (10, 8 + 20 * i))
         pg.display.flip()
         return True
+
+    def _draw_floor(self, cx, cy):
+        """Ground with a 10 m grid (so motion is visible anywhere), the course surface, its
+        edges, and the start/finish lines."""
+        pg, s, w, h = self.pg, self.screen, self.size[0], self.size[1]
+        s.fill(GROUND)
+        half = self.size / (2 * self.zoom)
+        if GRID_M * self.zoom >= 6:
+            for gx in np.arange(np.floor((cx - half[0]) / GRID_M), np.ceil((cx + half[0]) / GRID_M) + 1) * GRID_M:
+                px = w / 2 + (gx - cx) * self.zoom
+                pg.draw.line(s, GRID, (px, 0), (px, h), 1)
+            for gy in np.arange(np.floor((cy - half[1]) / GRID_M), np.ceil((cy + half[1]) / GRID_M) + 1) * GRID_M:
+                py = h / 2 - (gy - cy) * self.zoom
+                pg.draw.line(s, GRID, (0, py), (w, py), 1)
+        q = self._px(self.quads.reshape(-1, 2), cx, cy).reshape(-1, 4, 2)
+        vis = ((q[:, :, 0].max(1) > 0) & (q[:, :, 0].min(1) < w) & (q[:, :, 1].max(1) > 0) & (q[:, :, 1].min(1) < h))
+        for quad in q[vis]:
+            pg.draw.polygon(s, SURFACE, quad.tolist())
+        for b in (self.track.left, self.track.right):
+            pg.draw.lines(s, EDGE, self.track.closed, self._px(b, cx, cy).tolist(), 1)
+        for ln, col in self.lines:
+            pg.draw.line(s, col, *self._px(ln, cx, cy).tolist(), max(int(0.4 * self.zoom), 2))
 
     def close(self):
         self.pg.quit()

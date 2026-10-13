@@ -7,8 +7,9 @@ It mirrors the EIC autonomous autocross event: **the controller never gets a map
 The harness also provides:
 
 - **Two backends:** CARLA 0.9.16 (full physics) and a calibrated dynamic bicycle model for fast iteration without CARLA. The two agree within about 2.5% on lap time.
-- **Flat autocross pad:** generated on the fly from a small OpenDRIVE road, with knockable physics cones. No Unreal map editing is needed.
-- **Sandboxed controllers:** each controller runs in its own process with 1 CPU core, no GPU, a memory ceiling and a 50 ms deadline per step.
+- **Flat autocross pad:** generated on the fly from a small OpenDRIVE road, with knockable physics cones and painted start/finish lines. No Unreal map editing is needed.
+- **Sandboxed controllers:** each controller runs in its own process with 1 CPU core, no GPU, a memory ceiling and a 50 ms deadline per step. It cannot read course files or earlier runs from disk.
+- **Separate test and evaluation courses:** teams develop on a public test course, and scored runs use an unreleased course.
 - **Scoring:** rules, penalties, metrics, rubric scoring, leaderboard, robustness sweeps and real-time pacing.
 - **Full ground-truth telemetry** logged at 40 Hz for every run.
 
@@ -39,15 +40,15 @@ Activate the environment with `.venv\Scripts\Activate.ps1` (Linux: `source .venv
 
 ```powershell
 # No CARLA needed: bicycle model with a live top-down view
-python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\practice_basic.yaml --backend bicycle --view
+python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\hackathon_test.yaml --backend bicycle --view
 
 # Full CARLA
 scripts\start_carla.ps1                  # windowed 1280x720, Low quality; add -Headless for no window
 python -m autocross check                # confirms the server is reachable
-python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\practice_obstacles.yaml --realtime
+python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\hackathon_test.yaml --realtime
 ```
 
-In CARLA the spectator follows the car, and the controller's planned path is drawn in cyan. Every run prints a score summary and writes a folder under `runs/`. Open `report.png` there first.
+In CARLA the spectator follows the car, the start and finish lines are painted on the pad, and the controller's planned path is drawn in cyan. The top-down view shows the course surface on a 10 m ground grid. Every run prints a score summary and writes a folder under `runs/`. Open `report.png` there first.
 
 ---
 
@@ -86,6 +87,7 @@ Full definitions are in [`autocross/api.py`](autocross/api.py). The baseline ([`
 - **Actuators:** steering is slew-rate limited, and optional actuation delay can be added.
 - **Invalid output:** an exception, NaN or wrong return type counts as an error. 20 errors in a row is a DNF (did not finish).
 - **Dependencies:** controllers run in the harness's Python environment, so use only packages installed there (numpy is always available).
+- **No course data from disk:** the controller process cannot open anything under `tracks/` or `runs/`, or the course being driven (`sandbox.protected_paths`). In event mode `on_start` gets the course name as just `"course"`. Read your own files (lookup tables, weights) from your controller's folder.
 
 ---
 
@@ -124,7 +126,7 @@ All commands are `python -m autocross <command> --help`.
 | `batch -c CTRL` | Robustness sweep over courses × perturbations × seeds ([`config/robustness.yaml`](config/robustness.yaml)): perception and road-model noise, shorter sight distance, low grip, extra mass, actuator latency, steering bias, start offsets |
 | `score RUN_DIR` | Re-score a run, optionally adding `--judged innovation=80` |
 | `leaderboard [runs] --award` | Best run per team and course, plus the award categories (fastest, most realistic, most efficient, most precise) |
-| `gen-track --seed N --out F.yaml [--closed] [--obstacles K] --preview` | Generate a random valid course |
+| `gen-track [--seed N] --out F.yaml [--closed] [--obstacles K] --preview` | Generate a random valid course (no `--seed`: secret course) |
 | `show-track F.yaml` | Validate a course, print stats and reference time, and save a preview PNG |
 | `plot RUN_DIR` | Regenerate `report.png` |
 | `calibrate --backend carla` | Measure the vehicle's acceleration, braking and lateral grip limits |
@@ -155,7 +157,32 @@ obstacles:
   - {s: 120, offset: 1.0, width: 2.0}          # station along the course, lateral offset, width
 ```
 
-Practice courses are in `tracks/`. Keep event courses in `tracks/private/`, which is git-ignored.
+### Test course vs. evaluation course
+
+| Course | Where | Who sees it |
+|---|---|---|
+| `tracks/hackathon_test.yaml` | in the repo | teams: develop and test here |
+| `tracks/practice_*.yaml` | in the repo | teams: extra practice (open, closed loop, obstacles) |
+| `tracks/private/*.yaml` | git-ignored | organisers only: the scored evaluation course |
+
+The evaluation course has a different layout from the test course (different corner sequence, slaloms and obstacle positions) but the same kinds of elements and width. A controller tuned to the exact shape of the test course will not carry over, so build controllers that work from `obs.road` alone. To check this before the event, test on random courses as well:
+
+```powershell
+python -m autocross gen-track --seed 42 --obstacles 3 --out tracks\my_random.yaml --preview
+```
+
+**For organisers:** put evaluation courses in `tracks/private/` (or anywhere outside the repo) and do not share them before scoring. `gen-track` is deterministic, so a course made with a small or guessable seed can be regenerated by anyone. Leave out `--seed` and `gen-track` uses a random seed that is never shown or saved, and names the course after the output file:
+
+```powershell
+python -m autocross gen-track --obstacles 4 --out tracks\private\hackathon_eval.yaml --preview
+```
+
+`tracks/private/hackathon_eval.yaml` is already set up this way. Score with:
+
+```powershell
+python -m autocross run -c teams\<team>.py -t tracks\private\hackathon_eval.yaml --team <team> --no-render
+python -m autocross leaderboard --track hackathon_eval --award
+```
 
 ---
 
@@ -166,12 +193,13 @@ Practice courses are in `tracks/`. Keep event courses in `tracks/private/`, whic
 | Section | Contents |
 |---|---|
 | `sim` | physics step (25 ms), control rate (20 Hz), timeout, seed, `realtime_factor` |
-| `carla` | host/port, rendering, spectator, cone models, weather, recorder |
+| `carla` | host/port, rendering, spectator, pad margin, painted lines, cone models (boundary, line marker, obstacle), weather, recorder |
 | `vehicle` | blueprint, steering limit, CARLA tire friction / brake torque / torque scale, published limits, bicycle-model parameters |
 | `road_model` | preview range and step, corner detection, lane-model noise (0 = ideal) |
 | `perception` | raw cone sensor range, field of view, noise, dropout, misclassification |
 | `track_knowledge` | `perception` (event: no map) or `full` (map given in `on_start`, for debugging) |
 | `compute_budget` | enforce/measure mode, cores, deadline, memory, GPU access |
+| `sandbox` | paths the controller process may not read (`tracks`, `runs` by default) |
 | `rules` | off-course rule, DNF thresholds, gate spacing, cone-hit margin |
 
 **Vehicle calibration.** CARLA's stock Model 3 is unrealistic for this use:
@@ -213,7 +241,7 @@ autocross/            harness package
   cli.py, calibrate.py, config.py
 config/               sim.yaml, scoring.yaml, robustness.yaml
 controllers/          baseline_pure_pursuit.py, template_controller.py
-tracks/               practice courses (private/ is git-ignored)
+tracks/               hackathon_test + practice courses (private/ = evaluation, git-ignored)
 scripts/              setup and CARLA launch scripts (PowerShell + bash)
 tests/                pytest suite (bicycle backend, no CARLA needed)
 ```
@@ -221,7 +249,7 @@ tests/                pytest suite (bicycle backend, no CARLA needed)
 ## Development
 
 ```powershell
-python -m pytest            # 29 tests, ~15 s, no CARLA required
+python -m pytest            # 41 tests, ~25 s, no CARLA required
 ```
 
 The official event scoring should be run on a single reference machine, because the 50 ms deadline depends on the machine.

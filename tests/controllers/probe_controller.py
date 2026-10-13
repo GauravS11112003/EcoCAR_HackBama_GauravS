@@ -10,7 +10,7 @@ from baseline_pure_pursuit import PurePursuitBaseline  # noqa: E402
 
 class ProbeController(PurePursuitBaseline):
     def on_start(self, track, vehicle):
-        assert not track.full_knowledge
+        assert not track.full_knowledge and track.name == "course"
         assert len(track.centerline) == 0 and len(track.cones) == 0 and len(track.gates) == 0
         super().on_start(track, vehicle)
 

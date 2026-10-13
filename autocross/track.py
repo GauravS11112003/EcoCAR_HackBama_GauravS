@@ -33,6 +33,8 @@ from . import geometry as g
 from .api import CONE_LEFT, CONE_ORANGE, CONE_RIGHT, TrackInfo, VehicleParams
 
 DS = 0.5  # centerline sample spacing [m]
+MARKER_OFFSETS = (0.6, 1.4)  # start/finish marker distances outside the line ends [m]
+MIN_CONE_GAP = 0.5  # closest two physical cones may stand [m]; closer props collide at spawn
 COLOR_NAMES = {"left": CONE_LEFT, "blue": CONE_LEFT, "right": CONE_RIGHT, "yellow": CONE_RIGHT,
                "orange": CONE_ORANGE}
 
@@ -196,14 +198,15 @@ class Track:
                 col.append(color)
                 k = np.interp(t, s, kk)
                 t += self.cone_spacing * float(np.clip(1.0 / (1.0 + 12.0 * k), 0.35, 1.0))
-        # doubled orange cones marking the ends of the start and finish lines
+        # doubled orange markers just outside each end of the start and finish lines, spaced so
+        # the physical props do not touch
         lines = [self.cross_line(self.s_of_progress(self.start_progress))]
         if not self.closed:
             lines.append(self.cross_line(self.s_of_progress(self.finish_progress)))
         for ln in lines:
             d = (ln[0] - ln[1]) / max(np.linalg.norm(ln[0] - ln[1]), 1e-9)
             for end, sgn in ((ln[0], 1), (ln[1], -1)):
-                for k in (0.4, 0.9):
+                for k in MARKER_OFFSETS:
                     pos.append(end + sgn * d * k)
                     col.append(CONE_ORANGE)
         for c in self.extra_cones:
@@ -212,7 +215,9 @@ class Track:
         return np.asarray(pos, float), np.asarray(col, int)
 
     def _place_obstacles(self):
-        """Obstacle cone positions; also records each cone's station, lateral offset and group."""
+        """Obstacle cone positions; also records each cone's station, lateral offset and group.
+        A cone that would stand on top of a mapped cone (e.g. a group reaching the boundary) is
+        left out: that spot is already blocked, and overlapping props collide at spawn."""
         pts, meta = [], []
         for gid, ob in enumerate(self.obstacles):
             s = float(ob["s"])
@@ -222,7 +227,10 @@ class Track:
             k = max(int(round(w / sp)), 0)
             for i in range(k + 1):
                 lat = off - w / 2 + (w * i / k if k else w / 2)
-                pts.append(p + n * lat)
+                q = p + n * lat
+                if len(self.cones) and np.min(np.hypot(*(self.cones - q).T)) < MIN_CONE_GAP:
+                    continue
+                pts.append(q)
                 meta.append((s, lat, gid))
         m = np.asarray(meta, float).reshape(-1, 3)
         self.obstacle_s, self.obstacle_lat, self.obstacle_gid = m[:, 0], m[:, 1], m[:, 2].astype(int)
@@ -251,6 +259,14 @@ class Track:
         if clash.any():
             i, j = np.argwhere(clash)[0]
             problems.append(f"corridor overlaps itself near s={s[i]:.0f} m and s={s[j]:.0f} m")
+        pos, _, _ = self.all_cones()
+        if len(pos) > 1:
+            d = np.hypot(*(pos[:, None, :] - pos[None, :, :]).transpose(2, 0, 1))
+            np.fill_diagonal(d, np.inf)
+            i, j = np.unravel_index(int(np.argmin(d)), d.shape)
+            if d[i, j] < MIN_CONE_GAP:
+                problems.append(f"cones at ({pos[i][0]:.1f}, {pos[i][1]:.1f}) and ({pos[j][0]:.1f}, {pos[j][1]:.1f}) "
+                                f"are {d[i, j]:.2f} m apart (min {MIN_CONE_GAP} m); check obstacle spacing/extra_cones")
         if not self.closed and self.finish_progress <= self.start_progress + 20:
             problems.append("open course is too short for start offset + finish runoff")
         return problems
@@ -263,8 +279,8 @@ class Track:
         if full_knowledge:
             return TrackInfo(self.name, self.closed, self.laps, self.center.copy(), self.wl.copy(), self.wr.copy(),
                              self.cones.copy(), self.cone_colors.copy(), start, finish, gates, True)
-        e2, e1 = np.zeros((0, 2)), np.zeros(0)
-        return TrackInfo(self.name, self.closed, self.laps, e2, e1, e1, e2, np.zeros(0, int), start, finish,
+        e2, e1 = np.zeros((0, 2)), np.zeros(0)  # no map; the name is withheld too (it may encode a seed)
+        return TrackInfo("course", self.closed, self.laps, e2, e1, e1, e2, np.zeros(0, int), start, finish,
                          np.zeros((0, 2, 2)), False)
 
     def reference_time_estimate(self, vp: VehicleParams, grip_fraction: float = 0.9) -> float:

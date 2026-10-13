@@ -160,7 +160,9 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
         cones, colors, _ = track.all_cones()
         info = track.info(cfg.get("track_knowledge", "full") == "full", float(rules["gate_spacing_m"]))
 
-        ctrl = ControllerProcess(controller, cfg["compute_budget"], controller_class, controller_cfg)
+        protected = [Path(track_path).resolve(), ROOT / cfg["output"]["runs_dir"]] + [
+            p if p.is_absolute() else ROOT / p for p in map(Path, cfg.get("sandbox", {}).get("protected_paths", []) or [])]
+        ctrl = ControllerProcess(controller, cfg["compute_budget"], controller_class, controller_cfg, protected)
         try:
             ctrl.start(info, vp)
             run_info["init_ms"] = ctrl.init_ms

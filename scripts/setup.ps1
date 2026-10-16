@@ -34,11 +34,15 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 if ($LASTEXITCODE -ne 0) {
     if (-not $CarlaRoot) { $CarlaRoot = @("$env:USERPROFILE\CARLA_$CarlaVersion", "C:\CARLA_$CarlaVersion") | Where-Object { Test-Path $_ } | Select-Object -First 1 }
     $tag = "cp" + $py.Replace(".", "")
-    $whl = Get-ChildItem "$CarlaRoot\PythonAPI\carla\dist\carla-*-$tag-*win_amd64.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $whl) { throw "No carla==$CarlaVersion wheel for Python $py on PyPI or in $CarlaRoot\PythonAPI\carla\dist" }
-    & $vpy -m pip install $whl.FullName -q
+    $whl = if ($CarlaRoot) { Get-ChildItem "$CarlaRoot\PythonAPI\carla\dist\carla-*-$tag-*win_amd64.whl" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if ($whl) {
+        & $vpy -m pip install $whl.FullName -q
+    } else {
+        Write-Host "`nNOTE: no carla==$CarlaVersion client for Python $py on PyPI or in CARLA_ROOT."
+        Write-Host "      The harness is installed; use --backend bicycle. To add CARLA later, pass -CarlaRoot and re-run."
+    }
 }
 
 & $vpy -m autocross check
 Write-Host "`nSetup complete. Activate with:  .venv\Scripts\Activate.ps1"
-Write-Host "Dev loop without CARLA:  python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\practice_basic.yaml --backend bicycle --view"
+Write-Host "Dev loop without CARLA:  python -m autocross run -c controllers\baseline_pure_pursuit.py -t tracks\hackathon_test.yaml --backend bicycle --view"

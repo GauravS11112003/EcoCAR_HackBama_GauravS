@@ -168,6 +168,72 @@ def cmd_calibrate(a):
     return 0
 
 
+def cmd_compare(a):
+    import datetime as dt_
+
+    from .config import ROOT
+    from .fit import compare_summaries
+    from .runner import run
+    cfg = _cfg(a)
+    cfg["carla"]["render"] = False
+    root = Path(a.out) if a.out else ROOT / cfg["output"]["runs_dir"] / f"{dt_.datetime.now():%Y%m%d-%H%M%S}_compare"
+    ctrl_cfg = load_yaml(a.controller_config) if a.controller_config else None
+    rows = []
+    for tp in a.track:
+        name = Path(tp).stem
+        s = {}
+        for be in ("carla", "bicycle"):
+            if be == "carla" and a.carla_runs:
+                s[be] = _carla_run_for(a.carla_runs, name)
+                continue
+            s[be] = run(cfg, a.controller, tp, team=a.team, backend=be, controller_class=a.controller_class,
+                        controller_cfg=ctrl_cfg, out_dir=root / f"{name}_{be}", verbose=not a.quiet)
+        rows.append({"track": name, **compare_summaries(s["carla"], s["bicycle"])})
+    worst = 0.0
+    print(f"\n{'course':<22}{'CARLA s':>10}{'bicycle s':>11}{'diff':>9}{'speed RMS':>11}")
+    for r in rows:
+        if r["diff_pct"] is None:
+            worst = float("inf")
+            print(f"{r['track']:<22}  finished: CARLA {r['ref_finished']}, bicycle {r['dev_finished']}")
+            continue
+        worst = max(worst, abs(r["diff_pct"]))
+        rms = f"{r['speed_rms_mps']:.2f} m/s" if r["speed_rms_mps"] is not None else "-"
+        print(f"{r['track']:<22}{r['ref_time_s']:>10.2f}{r['dev_time_s']:>11.2f}{r['diff_pct']:>+8.2f}%{rms:>11}")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "compare.json").write_text(json.dumps({"tolerance_pct": a.tolerance, "results": rows}, indent=2))
+    ok = worst <= a.tolerance
+    print(f"\nworst lap-time difference {worst:.2f}% ({'within' if ok else 'OUTSIDE'} {a.tolerance:g}%) -> {root}")
+    return 0 if ok else 1
+
+
+def _carla_run_for(dirs, track_name):
+    from .fit import find_runs
+    for rd in find_runs(dirs, "carla"):
+        s = json.loads((rd / "summary.json").read_text())
+        if s["track"]["name"] == track_name or rd.name.startswith(track_name):
+            s["out_dir"] = str(rd)
+            return s
+    raise SystemExit(f"no CARLA run for course '{track_name}' under {', '.join(dirs)}")
+
+
+def cmd_fit_bicycle(a):
+    from .fit import Windows, find_runs, fit, write_bicycle_section
+    cfg = load_sim_config(a.config)
+    runs = find_runs(a.runs, "carla")
+    if not runs:
+        raise SystemExit(f"no CARLA runs (summary.json + telemetry.csv) under {', '.join(a.runs)}")
+    print(f"[fit] {len(runs)} CARLA run(s): " + ", ".join(r.name for r in runs))
+    w = Windows(runs, window_s=a.window)
+    new = fit(w, cfg["vehicle"], max_evals=a.max_evals)
+    print("\nFitted vehicle.bicycle values:")
+    for k, v in new.items():
+        print(f"    {k}: {v:.6g}")
+    if a.write:
+        write_bicycle_section(a.config, new)
+        print(f"\nwritten to {a.config}; check agreement with `python -m autocross compare`")
+    return 0
+
+
 def cmd_check(a):
     import platform
     ok = True
@@ -255,6 +321,23 @@ def main(argv=None):
     p.add_argument("--config", default=str(DEFAULT_SIM))
     p.add_argument("--set", action="append")
     p.set_defaults(fn=cmd_calibrate)
+
+    p = sub.add_parser("compare", help="run a controller on CARLA and on the bicycle model, compare lap times")
+    _common(p)
+    p.add_argument("--track", "-t", action="append", required=True, help="repeat for several courses")
+    p.add_argument("--carla-runs", action="append", metavar="DIR",
+                   help="reuse existing CARLA runs from these folders instead of driving CARLA again")
+    p.add_argument("--tolerance", type=float, default=1.0, help="allowed lap-time difference in %% (exit 1 if over)")
+    p.add_argument("--out", help="output folder (default runs/<stamp>_compare)")
+    p.set_defaults(fn=cmd_compare)
+
+    p = sub.add_parser("fit-bicycle", help="fit the bicycle model parameters to CARLA run telemetry")
+    p.add_argument("runs", nargs="+", help="CARLA run folders, or folders containing them (e.g. a compare folder)")
+    p.add_argument("--config", default=str(DEFAULT_SIM))
+    p.add_argument("--write", action="store_true", help="write the fitted values into the config's vehicle.bicycle")
+    p.add_argument("--window", type=float, default=1.5, help="replay window length in seconds")
+    p.add_argument("--max-evals", type=int, default=1500)
+    p.set_defaults(fn=cmd_fit_bicycle)
 
     p = sub.add_parser("check", help="verify the installation and CARLA connectivity")
     p.add_argument("--config", default=str(DEFAULT_SIM))

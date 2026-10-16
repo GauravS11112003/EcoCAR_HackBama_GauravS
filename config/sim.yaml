@@ -41,7 +41,7 @@ vehicle:
   max_accel: 5.2
   max_decel: 9.0
   max_speed: 40.0
-  bicycle:                    # dev backend parameters, tuned to match the CARLA vehicle
+  bicycle:                    # dev backend parameters; refit to CARLA with `autocross fit-bicycle --write`
     mass: 1845.0
     wheelbase: 3.0
     cg_to_front: 1.45

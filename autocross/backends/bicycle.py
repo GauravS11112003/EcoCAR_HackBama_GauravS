@@ -1,9 +1,11 @@
 """Dynamic single-track (bicycle) model with saturating tyres and a friction circle.
 
 Development backend only: fast, deterministic and dependency-free, so controllers can be
-iterated and unit-tested without a CARLA server. Parameters default to the values measured
-from the CARLA vehicle (see ``autocross calibrate``) but it is NOT a substitute for the
-scored CARLA runs."""
+iterated and unit-tested without a CARLA server. Parameters are fitted to CARLA telemetry
+(see ``autocross fit-bicycle``) but it is NOT a substitute for the scored CARLA runs.
+
+The dynamics live in :func:`substep`, which works on floats and on numpy arrays alike, so
+the fitter can simulate many telemetry windows at once with exactly the same physics."""
 from __future__ import annotations
 
 import math
@@ -14,6 +16,97 @@ from .base import Backend, PhysicalParams, VehicleState
 
 G = 9.81
 
+# vehicle.bicycle keys and their defaults; FIT_KEYS are the ones fitted to CARLA telemetry
+DEFAULTS = {
+    "mass": 1845.0, "wheelbase": 3.0, "cg_to_front": 1.45, "cg_height": 0.5, "track_width": 1.67,
+    "length": 4.79, "width": 2.16, "yaw_inertia_factor": 1.0, "mu": 1.0, "cornering_stiffness_per_load": 14.0,
+    "max_drive_force": 11000.0, "max_power_w": 200000.0, "max_brake_force": 15000.0, "drag_area": 0.55,
+    "rolling_resistance": 0.012, "steer_time_constant": 0.06, "front_drive_fraction": 0.4,
+    "traction_limit": 0.85, "front_brake_fraction": 0.6,
+}
+FIT_KEYS = ("mu", "cornering_stiffness_per_load", "max_drive_force", "max_power_w", "max_brake_force", "drag_area",
+            "rolling_resistance", "steer_time_constant", "traction_limit", "front_drive_fraction",
+            "front_brake_fraction", "yaw_inertia_factor", "cg_height")
+BOUNDS = {"traction_limit": (0.3, 1.0), "front_drive_fraction": (0.0, 1.0), "front_brake_fraction": (0.0, 1.0),
+          "steer_time_constant": (0.005, 0.5)}
+
+
+def model_params(vehicle_cfg: dict, perturb: dict | None = None) -> dict:
+    """Bicycle parameters from the ``vehicle`` config section, with derived quantities."""
+    perturb = perturb or {}
+    p = {k: float(vehicle_cfg.get("bicycle", {}).get(k, v)) for k, v in DEFAULTS.items()}
+    p["mass"] *= float(perturb.get("mass_scale", 1.0))
+    p["mu"] *= float(perturb.get("friction_scale", 1.0))
+    p["max_steer"] = math.radians(float(vehicle_cfg.get("max_steer_deg", 35.0)))
+    return derive(p)
+
+
+def derive(p: dict) -> dict:
+    for k, (lo, hi) in BOUNDS.items():
+        p[k] = min(max(p[k], lo), hi)
+    p["cg_to_rear"] = p["wheelbase"] - p["cg_to_front"]
+    p["iz"] = p["yaw_inertia_factor"] * p["mass"] * p["cg_to_front"] * p["cg_to_rear"]
+    return p
+
+
+def substep(s, cmd, ax_prev, p, h):
+    """Advance (x, y, yaw, vx, vy, r, delta) by ``h`` seconds under (steer, throttle, brake).
+    ``ax_prev`` is the longitudinal acceleration of the previous tick (load transfer)."""
+    x, y, yaw, vx, vy, r, delta = s
+    steer, throttle, brake = cmd
+    m, L, lf, lr = p["mass"], p["wheelbase"], p["cg_to_front"], p["cg_to_rear"]
+    target = np.clip(steer, -1, 1) * p["max_steer"]
+    delta = delta + (target - delta) * min(h / p["steer_time_constant"], 1.0)
+    d = delta
+    # longitudinal forces
+    f_trac = throttle * np.minimum(p["max_drive_force"], p["max_power_w"] / np.maximum(vx, 1.0))
+    f_brk = brake * p["max_brake_force"]
+    f_res = 0.5 * 1.2 * p["drag_area"] * vx * np.abs(vx) + p["rolling_resistance"] * m * G * (vx > 0.05)
+    # load transfer from previous-step accel
+    fzf = m * (G * lr - ax_prev * p["cg_height"]) / L
+    fzr = m * G - fzf
+    # axle longitudinal demand (AWD split, front/rear brake split); traction control / ABS keep
+    # the longitudinal force below traction_limit * mu * Fz so some lateral grip always remains
+    fb = p["front_brake_fraction"]
+    lim = p["traction_limit"] * p["mu"]
+    fxf = np.clip(p["front_drive_fraction"] * f_trac - fb * f_brk, -lim * fzf, lim * fzf)
+    fxr = np.clip((1.0 - p["front_drive_fraction"]) * f_trac - (1.0 - fb) * f_brk, -lim * fzr, lim * fzr)
+    # dynamic model (only applied above 1 m/s)
+    vxs = np.maximum(vx, 1.0)
+    af = np.arctan2(vy + lf * r, vxs) - d
+    ar = np.arctan2(vy - lr * r, vxs)
+    fyf = _lat(af, fzf, fxf, p)
+    fyr = _lat(ar, fzr, fxr, p)
+    cd, sd = np.cos(d), np.sin(d)
+    vx_dot = (fxr + fxf * cd - fyf * sd - f_res) / m + r * vy
+    vy_dot = (fyr + fyf * cd + fxf * sd) / m - r * vx
+    rdot = (lf * (fyf * cd + fxf * sd) - lr * fyr) / p["iz"]
+    dyn = vx > 1.0
+    vx_d = np.where(dyn, vx + vx_dot * h, vx)
+    vy_d = np.where(dyn, vy + vy_dot * h, vy)
+    r_d = np.where(dyn, r + rdot * h, r)
+    # low speed: kinematic model (blended in over 1..3 m/s for continuity)
+    w_kin = np.clip((3.0 - vx_d) / 2.0, 0.0, 1.0)
+    vk = np.where(vx_d <= 1.0, vx_d + (fxr + fxf - f_res) / m * h, vx_d)
+    vk = np.where((vk < 0) & (throttle <= 0.0), 0.0, vk)
+    rk = vk * np.tan(d) / L
+    vx = w_kin * vk + (1 - w_kin) * vx_d
+    vy = w_kin * rk * lr + (1 - w_kin) * vy_d
+    r = w_kin * rk + (1 - w_kin) * r_d
+    vx = np.maximum(vx, 0.0)
+    c, s_ = np.cos(yaw), np.sin(yaw)
+    x = x + (vx * c - vy * s_) * h
+    y = y + (vx * s_ + vy * c) * h
+    yaw = yaw + r * h
+    return x, y, yaw, vx, vy, r, delta
+
+
+def _lat(alpha, fz, fx, p):
+    fmax = p["mu"] * fz
+    avail = np.sqrt(np.maximum(fmax ** 2 - fx ** 2, 0.0))
+    c = p["cornering_stiffness_per_load"] * fz
+    return -avail * np.tanh(c * alpha / np.maximum(avail, 1.0))
+
 
 class BicycleBackend(Backend):
     name = "bicycle"
@@ -23,107 +116,32 @@ class BicycleBackend(Backend):
         self.sub = max(int(round(self.dt / 0.0025)), 1)
 
     def setup(self, track, vehicle_cfg: dict, perturb: dict, rng) -> PhysicalParams:
-        b = vehicle_cfg.get("bicycle", {})
-        self.m = float(b.get("mass", 1845.0)) * float(perturb.get("mass_scale", 1.0))
-        self.L = float(b.get("wheelbase", 3.0))
-        self.lf = float(b.get("cg_to_front", 1.45))
-        self.lr = self.L - self.lf
-        self.h = float(b.get("cg_height", 0.5))
-        self.iz = float(b.get("yaw_inertia_factor", 1.0)) * self.m * self.lf * self.lr
-        self.mu = float(b.get("mu", 1.0)) * float(perturb.get("friction_scale", 1.0))
-        self.c_norm = float(b.get("cornering_stiffness_per_load", 14.0))  # (N/rad)/N
-        self.f_drive = float(b.get("max_drive_force", 11000.0))
-        self.p_max = float(b.get("max_power_w", 200000.0))
-        self.f_brake = float(b.get("max_brake_force", 15000.0))
-        self.cda = float(b.get("drag_area", 0.55))
-        self.crr = float(b.get("rolling_resistance", 0.012))
-        self.tau_steer = float(b.get("steer_time_constant", 0.06))
-        self.front_drive = float(b.get("front_drive_fraction", 0.4))
-        self.slip_limit = float(b.get("traction_limit", 0.85))
-        self.max_steer = math.radians(float(vehicle_cfg.get("max_steer_deg", 35.0)))
+        self.p = p = model_params(vehicle_cfg, perturb)
         self.cmd = (0.0, 0.0, 0.0)
-        return PhysicalParams(self.m, self.L, float(b.get("track_width", 1.67)), float(b.get("length", 4.79)),
-                              float(b.get("width", 2.16)), self.lf, self.lr, self.max_steer)
+        return PhysicalParams(p["mass"], p["wheelbase"], p["track_width"], p["length"], p["width"],
+                              p["cg_to_front"], p["cg_to_rear"], p["max_steer"])
 
     def reset(self, x, y, yaw) -> VehicleState:
-        self.s = np.array([x, y, yaw, 0.0, 0.0, 0.0])  # x y yaw vx vy r
-        self.delta = 0.0
+        self.s = (float(x), float(y), float(yaw), 0.0, 0.0, 0.0, 0.0)  # x y yaw vx vy r delta
         self.t = 0.0
         self.acc = (0.0, 0.0)
         return self._state()
 
     def apply(self, steer, throttle, brake):
-        self.cmd = (steer, throttle, brake)
+        self.cmd = (float(steer), float(throttle), float(brake))
 
     def tick(self) -> VehicleState:
         h = self.dt / self.sub
-        v0 = self.s[3:5].copy()
+        v0 = self.s[3:5]
         for _ in range(self.sub):
-            self._substep(h)
+            self.s = substep(self.s, self.cmd, self.acc[0], self.p, h)
         self.t += self.dt
-        vx, vy, r = self.s[3:6]
-        dv = (self.s[3:5] - v0) / self.dt
-        self.acc = (float(dv[0] - r * vy), float(dv[1] + r * vx))
+        _, _, _, vx, vy, r, _ = self.s
+        dvx, dvy = (vx - v0[0]) / self.dt, (vy - v0[1]) / self.dt
+        self.acc = (float(dvx - r * vy), float(dvy + r * vx))
         return self._state()
 
-    def _substep(self, h):
-        steer, throttle, brake = self.cmd
-        target = float(np.clip(steer, -1, 1)) * self.max_steer
-        self.delta += (target - self.delta) * min(h / self.tau_steer, 1.0)
-        x, y, yaw, vx, vy, r = self.s
-        d = self.delta
-        # longitudinal forces
-        f_trac = throttle * min(self.f_drive, self.p_max / max(vx, 1.0))
-        f_brk = brake * self.f_brake
-        f_res = 0.5 * 1.2 * self.cda * vx * abs(vx) + self.crr * self.m * G * (1.0 if vx > 0.05 else 0.0)
-        # load transfer from previous-step accel
-        ax_prev = self.acc[0]
-        fzf = self.m * (G * self.lr - ax_prev * self.h) / self.L
-        fzr = self.m * G - fzf
-        # axle longitudinal demand (AWD split, 60/40 brakes); traction control / ABS keep the
-        # longitudinal force below slip_limit * mu * Fz so some lateral grip always remains
-        fxf = self.front_drive * f_trac - 0.6 * f_brk
-        fxr = (1.0 - self.front_drive) * f_trac - 0.4 * f_brk
-        lim = self.slip_limit * self.mu
-        fxf = float(np.clip(fxf, -lim * fzf, lim * fzf))
-        fxr = float(np.clip(fxr, -lim * fzr, lim * fzr))
-        if vx > 1.0:
-            af = math.atan2(vy + self.lf * r, vx) - d
-            ar = math.atan2(vy - self.lr * r, vx)
-            fyf = self._lat(af, fzf, fxf)
-            fyr = self._lat(ar, fzr, fxr)
-            vx_dot = (fxr + fxf * math.cos(d) - fyf * math.sin(d) - f_res) / self.m + r * vy
-            vy_dot = (fyr + fyf * math.cos(d) + fxf * math.sin(d)) / self.m - r * vx
-            rdot = (self.lf * (fyf * math.cos(d) + fxf * math.sin(d)) - self.lr * fyr) / self.iz
-            vx += vx_dot * h
-            vy += vy_dot * h
-            r += rdot * h
-        # low speed: kinematic model (blended in over 1..3 m/s for continuity)
-        w_kin = float(np.clip((3.0 - vx) / 2.0, 0.0, 1.0))
-        if w_kin > 0:
-            fx_net = fxr + fxf - f_res
-            vk = vx + fx_net / self.m * h if vx <= 1.0 else vx
-            if vk < 0 and throttle <= 0.0:
-                vk = 0.0
-            rk = vk * math.tan(d) / self.L
-            vyk = rk * self.lr
-            vx = w_kin * vk + (1 - w_kin) * vx
-            vy = w_kin * vyk + (1 - w_kin) * vy
-            r = w_kin * rk + (1 - w_kin) * r
-        vx = max(vx, 0.0)
-        c, s = math.cos(yaw), math.sin(yaw)
-        x += (vx * c - vy * s) * h
-        y += (vx * s + vy * c) * h
-        yaw += r * h
-        self.s = np.array([x, y, yaw, vx, vy, r])
-
-    def _lat(self, alpha, fz, fx):
-        fmax = self.mu * fz
-        avail = math.sqrt(max(fmax ** 2 - fx ** 2, 0.0))
-        c = self.c_norm * fz
-        return -avail * math.tanh(c * alpha / max(avail, 1.0))
-
     def _state(self) -> VehicleState:
-        x, y, yaw, vx, vy, r = self.s
-        return VehicleState(self.t, float(x), float(y), float(math.atan2(math.sin(yaw), math.cos(yaw))),
-                            float(vx), float(vy), float(r), self.acc[0], self.acc[1], steer_angle=self.delta)
+        x, y, yaw, vx, vy, r, delta = (float(v) for v in self.s)
+        return VehicleState(self.t, x, y, math.atan2(math.sin(yaw), math.cos(yaw)), vx, vy, r,
+                            self.acc[0], self.acc[1], steer_angle=delta)

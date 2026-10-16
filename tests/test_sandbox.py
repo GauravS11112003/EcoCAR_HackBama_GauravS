@@ -64,3 +64,13 @@ def test_path_deviation_cannot_be_gamed(cfg, root, tmp_path):
     assert stub < honest - 20          # a stub path ahead of the car scores badly
     assert zsrc == "centerline"        # an implausible path is ignored ...
     assert zig <= honest + 1e-6        # ... so it is no better than honestly tracking a plan
+
+
+def test_carla_client_cannot_be_loaded(cfg, root, tmp_path, monkeypatch):
+    """A stand-in 'carla' package on the path: the controller must not be able to load it."""
+    pkg = tmp_path / "site" / "carla"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("raise SystemExit('carla client loaded')\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    s = _run(cfg, root, "escape_controller.py", tmp_path, {"action": "carla"})
+    assert s["controller_error"] is None, s["controller_error"]

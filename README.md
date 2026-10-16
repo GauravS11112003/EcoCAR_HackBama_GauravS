@@ -97,7 +97,7 @@ Full definitions are in [`autocross/api.py`](autocross/api.py). The baseline ([`
 - **Invalid output:** an exception, NaN or wrong return type counts as an error. 20 errors in a row is a DNF (did not finish).
 - **Dependencies:** controllers run in the harness's Python environment, so use only packages installed there (numpy is always available).
 - **No course data from disk:** the controller process cannot open anything under `tracks/` or `runs/`, or the course being driven (`sandbox.protected_paths`). In event mode `on_start` gets the course name as just `"course"`. Read your own files (lookup tables, weights) from your controller's folder.
-- **Sandbox:** the controller process may read files, but it may not write, delete or rename files, start processes, open network connections, call native code through `ctypes`, or inspect the harness through the garbage collector. Any of these raises `PermissionError`, which counts as a controller error. Log with `Command.debug` instead: its values appear as `dbg_*` columns in `telemetry.csv`. Run `python -m autocross selftest -c your_controller.py` to check your controller against these rules.
+- **Sandbox:** the controller process may read files, but it may not write, delete or rename files, start processes, open network connections, import the CARLA client, call native code through `ctypes`, or inspect the harness through the garbage collector. Any of these raises `PermissionError`, which counts as a controller error. Log with `Command.debug` instead: its values appear as `dbg_*` columns in `telemetry.csv`. Run `python -m autocross selftest -c your_controller.py` to check your controller against these rules.
 
 ### Submitting
 
@@ -303,7 +303,7 @@ tests/                pytest suite (bicycle backend, no CARLA needed)
 ## Development
 
 ```powershell
-python -m pytest            # 58 tests, ~35 s, no CARLA required (includes anti-cheat tests)
+python -m pytest            # 59 tests, ~35 s, no CARLA required (includes anti-cheat tests)
 ```
 
 The official evaluation should be run on a single reference machine, because the 50 ms deadline depends on the machine.

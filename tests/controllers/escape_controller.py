@@ -31,6 +31,10 @@ def _attempt(action, cfg):
         gc.get_objects()
     elif action == "symlink":
         os.symlink(cfg["target"], cfg["path"])
+    elif action == "carla":
+        import importlib
+        sys.modules.pop("carla", None)       # undo the sys.modules block, then import another way
+        importlib.import_module("carla")
     elif action == "read_course":
         open(cfg["path"]).read()
     else:

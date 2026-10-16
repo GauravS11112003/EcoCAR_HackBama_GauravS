@@ -77,6 +77,9 @@ DENIED_EVENTS = frozenset({
     "shutil.copyfile", "shutil.copymode", "shutil.copystat", "shutil.copytree", "shutil.chown",
     "winreg.CreateKey", "winreg.DeleteKey", "winreg.SetValue", "winreg.ConnectRegistry",
 })
+# Packages a controller may not load: the CARLA client talks to the simulator through its own
+# C++ sockets, which no audit hook sees, so it could read the cone layout or move the car.
+FORBIDDEN_PACKAGES = ("carla",)
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
 
@@ -211,6 +214,8 @@ def _worker(conn, path, class_name, ctrl_cfg, dirs=(), file_digests=()):
     try:
         import numpy  # noqa: F401  (loaded before the guard: numpy needs ctypes at import time)
         from . import api  # noqa: F401
+        for pkg in FORBIDDEN_PACKAGES:
+            sys.modules[pkg] = None  # plain "import carla" now fails at once
         _install_guard(dirs, file_digests)
         del dirs, file_digests
         cls = load_controller_class(path, class_name)
@@ -265,6 +270,12 @@ class ControllerProcess:
             prot = [Path(p) for p in protected_paths or []]
             # directories inside another protected directory are covered already; leaving them out
             # also keeps run-folder names (which can name the course) out of the controller process
+            for pkg in FORBIDDEN_PACKAGES:  # their files cannot even be read, so no import route works
+                try:
+                    spec = importlib.util.find_spec(pkg)
+                except (ImportError, ValueError):
+                    spec = None
+                prot += [Path(d) for d in (spec.submodule_search_locations or [])] if spec else []
             res = [Path(os.path.realpath(p)) for p in prot if not p.is_file()]
             dirs = [str(d) for d in res if not any(o != d and o in d.parents for o in res)]
             digests = [path_digest(p) for p in prot if p.is_file()]

@@ -16,10 +16,15 @@ Set-Location $repo
 # pick an interpreter supported by the CARLA wheels (3.10 - 3.12)
 $candidates = if ($PythonVersion) { @($PythonVersion) } else { @("3.12", "3.11", "3.10") }
 $py = $null
+if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
+    throw "The Python launcher 'py' was not found. Install Python 3.12 from python.org and tick 'py launcher'."
+}
+$ErrorActionPreference = "Continue"   # a missing version writes to stderr; keep trying the next one
 foreach ($v in $candidates) {
     & py "-$v" -c "import sys" 2>$null
     if ($LASTEXITCODE -eq 0) { $py = $v; break }
 }
+$ErrorActionPreference = "Stop"
 if (-not $py) { throw "Python 3.10-3.12 not found (install from python.org, tick 'py launcher')." }
 Write-Host "Using Python $py"
 
@@ -30,8 +35,12 @@ $vpy = Join-Path $repo ".venv\Scripts\python.exe"
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # CARLA client: PyPI first, then the wheel shipped with the simulator
+# Windows PowerShell 5.1 turns redirected stderr into terminating errors under "Stop"
+$ErrorActionPreference = "Continue"
 & $vpy -m pip install "carla==$CarlaVersion" -q 2>$null
-if ($LASTEXITCODE -ne 0) {
+$carlaFromPyPI = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = "Stop"
+if (-not $carlaFromPyPI) {
     if (-not $CarlaRoot) { $CarlaRoot = @("$env:USERPROFILE\CARLA_$CarlaVersion", "C:\CARLA_$CarlaVersion") | Where-Object { Test-Path $_ } | Select-Object -First 1 }
     $tag = "cp" + $py.Replace(".", "")
     $whl = if ($CarlaRoot) { Get-ChildItem "$CarlaRoot\PythonAPI\carla\dist\carla-*-$tag-*win_amd64.whl" -ErrorAction SilentlyContinue | Select-Object -First 1 }

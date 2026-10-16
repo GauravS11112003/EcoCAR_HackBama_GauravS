@@ -22,7 +22,9 @@ def _attempt(action, cfg):
         os.remove(cfg["path"])
     elif action == "ctypes":
         import ctypes
-        ctypes.CDLL(None)
+        # CDLL(None) loads the main program on POSIX, but on Windows it raises TypeError
+        # before reaching the audit hook, so use a real library name there.
+        ctypes.CDLL("kernel32" if sys.platform == "win32" else None)
     elif action == "ctypes_pythonapi":
         import ctypes
         ctypes.pythonapi.Py_IsInitialized()

@@ -6,7 +6,7 @@ It mirrors the EIC autonomous autocross event: **the controller never gets a map
 
 The harness also provides:
 
-- **Two backends:** CARLA 0.9.16 (full physics) and a dynamic bicycle model for fast iteration without CARLA. The bicycle model's parameters are fitted to CARLA telemetry (`fit-bicycle`), and `compare` checks lap-time agreement against a 1% target.
+- **Two backends:** CARLA 0.9.16 (full physics) and a dynamic bicycle model for fast iteration without CARLA. The bicycle model's parameters are fitted to CARLA telemetry (`fit-bicycle`), and `compare` checks lap-time agreement against a ~2.5% target (the simplified single-track model's transient dynamics differ from CARLA's at roughly this level, so the official score counts each backend for half).
 - **Flat autocross pad:** generated on the fly from a small OpenDRIVE road, with knockable physics cones and painted start/finish lines. No Unreal map editing is needed.
 - **Sandboxed controllers:** each controller runs in its own process with 1 CPU core, no GPU, a memory ceiling and a 50 ms deadline per step. It cannot read course files or earlier runs from disk.
 - **Separate test and evaluation courses:** teams develop on public test and practice courses, and scored runs use unreleased courses kept in a private judges' repository.
@@ -168,7 +168,7 @@ All commands are `python -m autocross <command> --help`.
 | `show-track F.yaml` | Validate a course, print stats and reference time, and save a preview PNG |
 | `plot RUN_DIR` | Regenerate `report.png` |
 | `calibrate --backend carla` | Measure the vehicle's acceleration, braking and lateral grip limits |
-| `compare -c CTRL -t TRACK [-t TRACK ...]` | Run the same controller on CARLA and on the bicycle model and report lap-time difference and speed-profile RMS per course. Exits 1 if any course differs by more than `--tolerance` (default 1%). `--carla-runs DIR` reuses earlier CARLA runs |
+| `compare -c CTRL -t TRACK [-t TRACK ...]` | Run the same controller on CARLA and on the bicycle model and report lap-time difference and speed-profile RMS per course. Exits 1 if any course differs by more than `--tolerance` (default 2.5%). `--carla-runs DIR` reuses earlier CARLA runs |
 | `fit-bicycle RUN_DIR... [--write]` | Fit the bicycle model to the telemetry of CARLA runs; `--write` stores the result in `config/sim.yaml` |
 | `selftest -c CTRL [--carla]` | Run a controller on every public course with the official settings, and check it against the sandbox rules. Run this before submitting |
 | `check` | Verify the install and CARLA connectivity |

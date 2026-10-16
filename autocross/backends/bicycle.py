@@ -27,8 +27,14 @@ DEFAULTS = {
 FIT_KEYS = ("mu", "cornering_stiffness_per_load", "max_drive_force", "max_power_w", "max_brake_force", "drag_area",
             "rolling_resistance", "steer_time_constant", "traction_limit", "front_drive_fraction",
             "front_brake_fraction", "yaw_inertia_factor", "cg_height")
+# Physical bounds, enforced by derive() during fitting and at load. Without ceilings on the
+# dynamic parameters the fitter can reach a degenerate optimum (e.g. mu~4, drag~20, brake~0)
+# that matches short telemetry windows but is not a real vehicle; these keep any fit physical.
 BOUNDS = {"traction_limit": (0.3, 1.0), "front_drive_fraction": (0.0, 1.0), "front_brake_fraction": (0.0, 1.0),
-          "steer_time_constant": (0.005, 0.5)}
+          "steer_time_constant": (0.005, 0.5), "mu": (0.6, 1.3), "cornering_stiffness_per_load": (5.0, 25.0),
+          "max_drive_force": (6000.0, 16000.0), "max_power_w": (1.0e5, 3.5e5), "max_brake_force": (1.0e4, 2.5e4),
+          "drag_area": (0.3, 1.2), "rolling_resistance": (0.005, 0.03), "cg_height": (0.3, 0.7),
+          "yaw_inertia_factor": (0.5, 1.5)}
 
 
 def model_params(vehicle_cfg: dict, perturb: dict | None = None) -> dict:

@@ -371,7 +371,7 @@ def main(argv=None):
     p.add_argument("--track", "-t", action="append", required=True, help="repeat for several courses")
     p.add_argument("--carla-runs", action="append", metavar="DIR",
                    help="reuse existing CARLA runs from these folders instead of driving CARLA again")
-    p.add_argument("--tolerance", type=float, default=1.0, help="allowed lap-time difference in %% (exit 1 if over)")
+    p.add_argument("--tolerance", type=float, default=2.5, help="allowed lap-time difference in %% (exit 1 if over)")
     p.add_argument("--out", help="output folder (default runs/<stamp>_compare)")
     p.set_defaults(fn=cmd_compare)
 

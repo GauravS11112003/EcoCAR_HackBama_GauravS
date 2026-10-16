@@ -234,6 +234,50 @@ def cmd_fit_bicycle(a):
     return 0
 
 
+def cmd_selftest(a):
+    """Every public course, official settings, both backends if CARLA is available: what a team
+    should run before submitting."""
+    import datetime as dt_
+
+    from .config import ROOT
+    from .runner import run
+    cfg = _cfg(a)
+    cfg["carla"]["render"] = False
+    backends = [a.backend] if a.backend else ["bicycle"] + (["carla"] if a.carla else [])
+    courses = sorted((ROOT / "tracks").glob("*.yaml"))
+    root = ROOT / cfg["output"]["runs_dir"] / f"{dt_.datetime.now():%Y%m%d-%H%M%S}_selftest"
+    ctrl_cfg = load_yaml(a.controller_config) if a.controller_config else None
+    rows, errors = [], []
+    for be in backends:
+        for c in courses:
+            s = run(cfg, a.controller, str(c), team=a.team, backend=be, controller_class=a.controller_class,
+                    controller_cfg=ctrl_cfg, out_dir=root / f"{c.stem}_{be}", verbose=False)
+            m, sc = s["metrics"], s["score"]
+            cm, p = m["completion"], m["penalties"]
+            rows.append((c.stem, be, "finished" if cm["finished"] else f"DNF ({cm['dnf_reason']})",
+                         cm["time_s"], p["cone_hit"], p["off_course"], p["missed_gate"], m["compute"]["step_ms_p99"],
+                         sc["technical_points"]))
+            if s.get("controller_error"):
+                errors.append((c.stem, be, s["controller_error"]))
+    print(f"\n{'course':<22}{'backend':<9}{'result':<26}{'time':>7}{'cones':>7}{'off':>5}{'gates':>6}{'step p99':>10}{'tech':>7}")
+    for r in rows:
+        t = f"{r[3]:.1f}" if r[3] else "-"
+        print(f"{r[0]:<22}{r[1]:<9}{r[2]:<26}{t:>7}{r[4]:>7}{r[5]:>5}{r[6]:>6}{r[7]:>8.1f}ms{r[8]:>7.1f}")
+    tech = [r[8] for r in rows]
+    print(f"\nmean technical points {sum(tech) / len(tech):.1f} / 75 (the evaluation uses unreleased courses; "
+          "see README 'Official evaluation')")
+    for course, be, err in errors[:3]:
+        last = err.strip().splitlines()[-1]
+        print(f"\ncontroller error on {course} [{be}]: {last}")
+        if "controllers may not" in err:
+            print("  -> this breaks a sandbox rule (README 'Rules the harness enforces'); the same error happens "
+                  "in the evaluation")
+    if not a.carla:
+        print("\nbicycle model only; add --carla to also run on CARLA (server running)")
+    print(f"-> {root}")
+    return 1 if errors else 0
+
+
 def cmd_check(a):
     import platform
     ok = True
@@ -338,6 +382,12 @@ def main(argv=None):
     p.add_argument("--window", type=float, default=1.5, help="replay window length in seconds")
     p.add_argument("--max-evals", type=int, default=1500)
     p.set_defaults(fn=cmd_fit_bicycle)
+
+    p = sub.add_parser("selftest", help="run a controller on every public course with the official settings "
+                                         "(do this before submitting)")
+    _common(p)
+    p.add_argument("--carla", action="store_true", help="also run every course on CARLA (server running)")
+    p.set_defaults(fn=cmd_selftest)
 
     p = sub.add_parser("check", help="verify the installation and CARLA connectivity")
     p.add_argument("--config", default=str(DEFAULT_SIM))

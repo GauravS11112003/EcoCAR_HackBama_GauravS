@@ -19,7 +19,7 @@ from . import metrics as metrics_mod
 from . import score as score_mod
 from .api import Command, Observation, VehicleParams
 from .config import ROOT, deep_update
-from .geometry import body_to_world, polyline_min_distance
+from .geometry import body_to_world, path_is_plausible, polyline_window_distance
 from .monitor import RaceMonitor
 from .perception import ConeSensor, RoadModelSensor
 from .sandbox import ControllerProcess
@@ -82,6 +82,39 @@ def _machine_info() -> dict:
             "logical_cores": cores, "ram_gb": round(mem, 1) if mem else None, "bench_ms": round(bench, 1)}
 
 
+class CommittedPath:
+    """Path-deviation reference. Each position is compared with the path the controller
+    published ``commit_s`` earlier, near the point on it the car should have reached by now
+    (distance driven since publishing, +- a slack window). Publishing a stub path just ahead of
+    the car, or a zig-zag that covers the corridor, therefore earns nothing; implausible paths
+    are ignored and the centerline is used instead."""
+
+    def __init__(self, commit_s: float):
+        self.commit_s = commit_s
+        self.pending = deque()   # (t, path, arc length of the car's position on it, odometer)
+        self.ref = None
+
+    def publish(self, t, path, pos, odo):
+        if path is None or not path_is_plausible(path):
+            self.pending.append((t, None, 0.0, odo))  # an implausible path replaces the plan too
+            return
+        d = np.hypot(*(path - np.asarray(pos)).T)
+        i = int(np.argmin(d))
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(path, axis=0).T))))
+        self.pending.append((t, path, float(s[i]), odo))
+
+    def error(self, t, pos, odo):
+        """(error, has_path); has_path False means: no committed path, use the centerline."""
+        while self.pending and self.pending[0][0] <= t - self.commit_s + 1e-9:
+            self.ref = self.pending.popleft()
+        if self.ref is None or self.ref[1] is None:
+            return None, False
+        _, path, s0, odo0 = self.ref
+        s_exp = s0 + (odo - odo0)
+        slack = 3.0 + 0.25 * (odo - odo0)
+        return polyline_window_distance(path, s_exp - slack, s_exp + slack, pos), True
+
+
 def _check_command(cmd, pose) -> tuple[Command | None, bool]:
     """Validate a controller's return value. Returns (command or None if unusable, clipped?).
     The returned command's path is always in the world frame (vehicle-frame paths are
@@ -141,7 +174,8 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
     be = backend_obj or make_backend(backend, cfg)
     ctrl = None
     rows, dbg_rows = [], []
-    run_info = {"controller_errors": 0, "init_ms": float("nan"), "peak_mem_bytes": 0, "realtime_max_lag_s": 0.0}
+    run_info = {"controller_errors": 0, "init_ms": float("nan"), "peak_mem_bytes": 0, "realtime_max_lag_s": 0.0,
+                "controller_cpu_s": float("nan")}
     first_error = None
     wall0 = time.perf_counter()
     try:
@@ -160,7 +194,7 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
         cones, colors, _ = track.all_cones()
         info = track.info(cfg.get("track_knowledge", "full") == "full", float(rules["gate_spacing_m"]))
 
-        protected = [Path(track_path).resolve(), ROOT / cfg["output"]["runs_dir"]] + [
+        protected = [Path(track_path).resolve(), ROOT / cfg["output"]["runs_dir"], out.resolve()] + [
             p if p.is_absolute() else ROOT / p for p in map(Path, cfg.get("sandbox", {}).get("protected_paths", []) or [])]
         ctrl = ControllerProcess(controller, cfg["compute_budget"], controller_class, controller_cfg, protected)
         try:
@@ -182,6 +216,8 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
         last_cmd = Command(brake=1.0)
         app = [0.0, 0.0, 1.0]
         path = None
+        committed = CommittedPath(float(rules.get("path_commit_s", 0.5)))
+        odo = 0.0
         err_streak = 0
         k = 0
         rate = vp.max_steer_rate * dt
@@ -217,6 +253,7 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
                 if cmd.path is not None:
                     path = cmd.path
                     be.draw_path(path, control_dt * 1.5)
+                    committed.publish(st.t, path, (st.x, st.y), odo)
                 delay.append(cmd)
                 target = delay.popleft()
             # actuator model: steering slew-rate limit + bias; pedals direct
@@ -233,10 +270,13 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
                     if -ahead > 0.25:  # too far behind: drop the backlog instead of sprinting to catch up
                         pace_t0 -= ahead
             is_off = monitor.update(st, dt)
-            pe = polyline_min_distance(path, (st.x, st.y)) if path is not None else abs(monitor.lateral)
+            odo += st.speed * dt
+            pe, has_path = committed.error(st.t, (st.x, st.y), odo)
+            if not has_path:
+                pe = abs(monitor.lateral)
             rows.append((st.t, st.x, st.y, st.yaw, st.vx, st.vy, st.speed, st.yaw_rate, st.ax, st.ay, st.roll, st.pitch,
                          st.steer_angle, monitor.progress, monitor.lateral, monitor.boundary_margin, pe,
-                         float(path is not None), float(is_off), last_cmd.steer, last_cmd.throttle, last_cmd.brake,
+                         float(has_path), float(is_off), last_cmd.steer, last_cmd.throttle, last_cmd.brake,
                          app[0], app[1], app[2], float(is_ctrl),
                          stats.wall_ms if stats else math.nan, stats.cpu_ms if stats else math.nan,
                          stats.latency_ms if stats else math.nan, float(stats.overrun) if stats else 0.0,
@@ -250,6 +290,7 @@ def run(cfg: dict, controller: str, track_path: str, *, team: str | None = None,
         if ctrl is not None:
             ctrl.close()
             run_info["peak_mem_bytes"] = ctrl.peak_rss
+            run_info["controller_cpu_s"] = ctrl.drive_cpu_s
         be.close()
 
     wall = time.perf_counter() - wall0

@@ -110,6 +110,7 @@ rules:
   stuck_s: 8.0
   cone_hit_margin_m: 0.1
   gate_spacing_m: 20.0        # scored gates every N metres along the course
+  path_commit_s: 0.5          # path deviation is measured against the path published this long ago
 
 output:
   runs_dir: runs

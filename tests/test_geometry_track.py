@@ -40,8 +40,11 @@ def test_shipped_tracks_valid(root, name):
 
 
 def test_private_tracks_valid(root):
+    import yaml
     for f in sorted((root / "tracks" / "private").glob("*.yaml")):
-        assert load(f).validate() == [], f.name
+        spec = yaml.safe_load(f.read_text())
+        if "segments" in spec or "centerline" in spec:  # skip config files such as evaluation.yaml
+            assert load(f).validate() == [], f.name
 
 
 def test_obstacle_on_boundary_cone_is_dropped():

@@ -148,6 +148,37 @@ def polyline_min_distance(path: np.ndarray, p) -> float:
     return float(np.sqrt(((q - p) ** 2).sum(1).min()))
 
 
+def polyline_window_distance(path: np.ndarray, s_lo: float, s_hi: float, p) -> float:
+    """Distance from p to the part of polyline ``path`` between arc lengths s_lo and s_hi.
+    If the polyline ends before s_lo, the distance to its end point is returned."""
+    path = np.asarray(path, dtype=float)
+    s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(path, axis=0).T))))
+    if s[-1] <= s_lo:
+        return float(np.hypot(*(path[-1] - p)))
+    lo, hi = max(s_lo, 0.0), min(s_hi, s[-1])
+    inner = path[(s > lo) & (s < hi)]
+    ends = [np.array([np.interp(v, s, path[:, 0]), np.interp(v, s, path[:, 1])]) for v in (lo, hi)]
+    return polyline_min_distance(np.vstack([ends[0], inner, ends[1]]), p)
+
+
+def path_is_plausible(path: np.ndarray, max_curvature: float = 0.5, min_length: float = 2.0) -> bool:
+    """A drivable-looking path: long enough, no folds or zig-zags tighter than ``max_curvature``
+    (1/m, sampled every 1 m)."""
+    path = np.asarray(path, dtype=float)
+    if len(path) < 2:
+        return False
+    seg = np.hypot(*np.diff(path, axis=0).T)
+    if seg.sum() < min_length:
+        return False
+    keep = np.concatenate(([True], seg > 1e-6))  # drop repeated points
+    q = resample(path[keep], 1.0, False) if seg.sum() >= 3.0 else path
+    if len(q) < 3:
+        return True
+    h = np.unwrap(np.arctan2(*np.diff(q, axis=0).T[::-1]))
+    step = np.hypot(*np.diff(q, axis=0).T)
+    return bool(np.all(np.abs(np.diff(h)) <= max_curvature * np.maximum(step[1:], 1e-6) + 1e-9))
+
+
 def points_in_obb(pts: np.ndarray, x: float, y: float, yaw: float,
                   half_length: float, half_width: float, margin: float = 0.0) -> np.ndarray:
     b = world_to_body(pts, x, y, yaw)

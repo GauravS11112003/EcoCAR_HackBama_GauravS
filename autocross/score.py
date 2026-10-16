@@ -39,7 +39,10 @@ def score(metrics: dict, rubric: dict | None = None, judged: dict | None = None)
                          + dw["max"] * _lin(dev["path_err_max_m"], r["deviation"]["path_err_max_m"]))
 
     cw = r["compute"]["weights"]
-    cats["compute"] = (cw["latency"] * _lin(cpu["step_ms_p99"] / cpu["deadline_ms"], r["compute"]["p99_fraction_of_deadline"])
+    # load = the worse of step latency (p99) and CPU used per control step, so work moved into
+    # background threads between steps still counts
+    load = max(cpu["step_ms_p99"], cpu.get("cpu_ms_per_step", 0.0) if math.isfinite(cpu.get("cpu_ms_per_step", 0.0)) else 0.0)
+    cats["compute"] = (cw["latency"] * _lin(load / cpu["deadline_ms"], r["compute"]["p99_fraction_of_deadline"])
                        + cw["overruns"] * _lin(cpu["overrun_fraction"], r["compute"]["overrun_fraction"])
                        + cw["memory"] * _lin(cpu["peak_memory_mb"] / cpu["memory_limit_mb"], r["compute"]["memory_fraction_of_limit"]))
 

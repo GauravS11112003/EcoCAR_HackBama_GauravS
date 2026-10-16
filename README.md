@@ -92,11 +92,23 @@ Full definitions are in [`autocross/api.py`](autocross/api.py). The baseline ([`
 
 ### Rules the harness enforces
 
-- **Compute:** `step()` must return within 50 ms, or the previous command is held and an overrun is logged. The controller runs on 1 core, with no GPU and a 1 GB memory ceiling. `on_start()` may take up to 60 s.
+- **Compute:** `step()` must return within 50 ms, or the previous command is held and an overrun is logged. The harness measures this itself, as the round trip to your controller process, and also measures all CPU time that process uses, including any background threads. The controller runs on 1 core, with no GPU and a 1 GB memory ceiling. `on_start()` may take up to 60 s.
 - **Actuators:** steering is slew-rate limited, and optional actuation delay can be added.
 - **Invalid output:** an exception, NaN or wrong return type counts as an error. 20 errors in a row is a DNF (did not finish).
 - **Dependencies:** controllers run in the harness's Python environment, so use only packages installed there (numpy is always available).
 - **No course data from disk:** the controller process cannot open anything under `tracks/` or `runs/`, or the course being driven (`sandbox.protected_paths`). In event mode `on_start` gets the course name as just `"course"`. Read your own files (lookup tables, weights) from your controller's folder.
+- **Sandbox:** the controller process may read files, but it may not write, delete or rename files, start processes, open network connections, call native code through `ctypes`, or inspect the harness through the garbage collector. Any of these raises `PermissionError`, which counts as a controller error. Log with `Command.debug` instead: its values appear as `dbg_*` columns in `telemetry.csv`. Run `python -m autocross selftest -c your_controller.py` to check your controller against these rules.
+
+### Submitting
+
+Submit either a single file `<team>.py`, or a folder `<team>/` containing `controller.py` plus any helper modules and data files it reads. The judges put it in `teams/` and run the official evaluation. Before you submit, run:
+
+```powershell
+python -m autocross selftest -c my_controller.py            # every public course on the bicycle model
+python -m autocross selftest -c my_controller.py --carla    # ... and on CARLA, if you have it
+```
+
+It runs every public course with the official settings, and reports finishes, penalties, step time and technical points. It also explains any sandbox-rule violation.
 
 ---
 
@@ -116,10 +128,12 @@ A run is a **DNF** if the car stays off course for more than 5 s, gets more than
 | Category | Weight | Measured as |
 |---|---|---|
 | Completion time | 30 | vs. a reference time (the course's `reference_time`, or an automatic friction-limited centerline estimate) |
-| Path deviation | 15 | mean/peak distance from the path the controller published (centerline if none) |
+| Path deviation | 15 | mean/peak distance from the path the controller published 0.5 s earlier, near the point it should have reached by now (centerline if no plausible path was published) |
 | Compute | 15 | p99 step time vs. deadline, overruns, peak memory |
 | Physical realism | 15 | grip over-demand, rear-axle sliding, steering-rate saturation, pedal overlap |
 | Innovation | 25 | judged; enter with `score --judged innovation=<0-100>` |
+
+Publish your real plan in `Command.path`, reaching at least a few metres ahead. Each position is compared with the path you published 0.5 s earlier, so a short stub path just ahead of the car scores badly. Paths that fold back or zig-zag more tightly than a car can drive are ignored, and the centerline is used instead.
 
 Weights and thresholds are in [`config/scoring.yaml`](config/scoring.yaml). The four computed categories add up to the run's **technical points** (out of 75), minus penalties.
 
@@ -136,7 +150,7 @@ The judges run every submitted controller on the two unreleased evaluation cours
 
 A DNF or a crashed controller still counts, with the points of its run. The technical course carries more weight, so a controller that is fast on the test courses but cannot handle the technical elements loses more than one that is slower but clean. The award categories (fastest, most physically realistic, most efficient compute, most precise) use the same weighted averages, and go only to teams that finish all four runs.
 
-To estimate your own score, run your controller on the test courses on both backends if you have CARLA, or on the bicycle model if you don't, and weight `practice_technical` more heavily than the others.
+To estimate your own score, run `python -m autocross selftest -c my_controller.py` (add `--carla` if you have it) and weight `practice_technical` more heavily than the others.
 
 ---
 
@@ -156,6 +170,7 @@ All commands are `python -m autocross <command> --help`.
 | `calibrate --backend carla` | Measure the vehicle's acceleration, braking and lateral grip limits |
 | `compare -c CTRL -t TRACK [-t TRACK ...]` | Run the same controller on CARLA and on the bicycle model and report lap-time difference and speed-profile RMS per course. Exits 1 if any course differs by more than `--tolerance` (default 1%). `--carla-runs DIR` reuses earlier CARLA runs |
 | `fit-bicycle RUN_DIR... [--write]` | Fit the bicycle model to the telemetry of CARLA runs; `--write` stores the result in `config/sim.yaml` |
+| `selftest -c CTRL [--carla]` | Run a controller on every public course with the official settings, and check it against the sandbox rules. Run this before submitting |
 | `check` | Verify the install and CARLA connectivity |
 
 ### Run outputs (`runs/<timestamp>_<team>_<course>/`)
@@ -204,7 +219,7 @@ A controller tuned to the exact shape of the test courses will not carry over. B
 python -m autocross gen-track --seed 42 --obstacles 3 --out tracks\my_random.yaml --preview
 ```
 
-**For judges:** the evaluation courses, the evaluation script (`tracks/private/tools/evaluate.py`) and the reference checks are in a separate private repository, cloned into `tracks/private/`. That folder is git-ignored, and team controllers cannot read anything under `tracks/`. Put team submissions in `teams/` (also git-ignored). To make a new secret course, leave out `--seed`: `gen-track` then uses a random seed that is never shown or saved. A course made with a small or guessable seed can be regenerated by anyone.
+**For judges:** the evaluation courses, the evaluation script (`tracks/private/tools/evaluate.py`) and the reference checks are in a separate private repository, cloned into `tracks/private/`. That folder is git-ignored, and team controllers cannot read anything under `tracks/`. Put team submissions in `teams/` as `<team>.py` or `<team>/controller.py` (also git-ignored). To make a new secret course, leave out `--seed`: `gen-track` then uses a random seed that is never shown or saved. A course made with a small or guessable seed can be regenerated by anyone.
 
 ```powershell
 python -m autocross gen-track --obstacles 4 --out tracks\private\my_eval.yaml --preview
@@ -288,7 +303,7 @@ tests/                pytest suite (bicycle backend, no CARLA needed)
 ## Development
 
 ```powershell
-python -m pytest            # 44 tests, ~30 s, no CARLA required
+python -m pytest            # 58 tests, ~35 s, no CARLA required (includes anti-cheat tests)
 ```
 
 The official evaluation should be run on a single reference machine, because the 50 ms deadline depends on the machine.

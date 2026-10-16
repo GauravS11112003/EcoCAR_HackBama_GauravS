@@ -67,6 +67,8 @@ def compute(log: dict, events: list[dict], run: dict, vp: dict, budget: dict) ->
         "step_ms_mean": _mean(wall), "step_ms_p50": _pct(wall, 50), "step_ms_p95": _pct(wall, 95),
         "step_ms_p99": _pct(wall, 99), "step_ms_max": float(np.nanmax(wall)) if np.isfinite(wall).any() else float("nan"),
         "cpu_ms_mean": _mean(cpu),
+        # all CPU the controller process used while driving (threads included), per control step
+        "cpu_ms_per_step": run.get("controller_cpu_s", float("nan")) * 1e3 / max(n, 1),
         "latency_ms_p99": _pct(log["latency_ms"][ctrl], 99),
         "deadline_ms": deadline,
         "cpu_utilisation": _mean(cpu) / deadline if n else float("nan"),

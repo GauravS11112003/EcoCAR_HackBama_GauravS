@@ -6,10 +6,10 @@ It mirrors the EIC autonomous autocross event: **the controller never gets a map
 
 The harness also provides:
 
-- **Two backends:** CARLA 0.9.16 (full physics) and a calibrated dynamic bicycle model for fast iteration without CARLA. The two agree within about 2.5% on lap time.
+- **Two backends:** CARLA 0.9.16 (full physics) and a dynamic bicycle model for fast iteration without CARLA. The bicycle model's parameters are fitted to CARLA telemetry (`fit-bicycle`), and `compare` checks lap-time agreement against a 1% target.
 - **Flat autocross pad:** generated on the fly from a small OpenDRIVE road, with knockable physics cones and painted start/finish lines. No Unreal map editing is needed.
 - **Sandboxed controllers:** each controller runs in its own process with 1 CPU core, no GPU, a memory ceiling and a 50 ms deadline per step. It cannot read course files or earlier runs from disk.
-- **Separate test and evaluation courses:** teams develop on a public test course, and scored runs use an unreleased course.
+- **Separate test and evaluation courses:** teams develop on public test and practice courses, and scored runs use unreleased courses kept in a private judges' repository.
 - **Scoring:** rules, penalties, metrics, rubric scoring, leaderboard, robustness sweeps and real-time pacing.
 - **Full ground-truth telemetry** logged at 40 Hz for every run.
 
@@ -21,18 +21,27 @@ Designed to run on a laptop (tested with an RTX 30-series GPU). A 40 s run takes
 
 ### Requirements
 
-- Windows 10/11 or Linux, Python **3.10–3.12** (the CARLA client wheels support these versions)
-- [CARLA 0.9.16](https://github.com/carla-simulator/carla/releases/tag/0.9.16), only needed for the CARLA backend
+| | Bicycle backend (development) | CARLA backend (evaluation) |
+|---|---|---|
+| OS | Windows, Linux or macOS | Windows 10/11 or Linux (CARLA has no macOS build) |
+| Python | **3.10–3.12** (3.13+ is not supported by the CARLA client wheels) | same |
+| Extra software | none | [CARLA 0.9.16](https://github.com/carla-simulator/carla/releases/tag/0.9.16) (≈ 20 GB unpacked) |
+| GPU | not needed | dedicated GPU (tested on RTX 30-series) |
+| Python packages | numpy, PyYAML, psutil, matplotlib, pygame, pytest (installed by the setup script) | plus `carla==0.9.16` (installed by the setup script) |
+
+Students only need the bicycle backend. They can develop and test a controller completely without CARLA; scored runs happen in CARLA on the reference machine.
+
+On Windows, install Python from python.org and tick **"py launcher"**, because the setup script uses it to find a 3.10–3.12 interpreter. On macOS use `brew install python@3.12`, and on Linux your distribution's `python3.12` and `python3.12-venv` packages.
 
 ### Setup (one time)
 
 ```powershell
-git clone https://ecocar-gitlab.ua.edu/eic/cav/mil-sim.git
-cd mil-sim
+git clone https://github.com/dszurek/ecocar-hackathon-sim.git
+cd ecocar-hackathon-sim
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1      # Linux: ./scripts/setup.sh
 ```
 
-The setup script creates `.venv`, installs the harness and the `carla==0.9.16` client, then runs a self-check. If CARLA is not in `%USERPROFILE%\CARLA_0.9.16` or `C:\CARLA_0.9.16`, pass `-CarlaRoot <path>` or set the `CARLA_ROOT` environment variable.
+The setup script creates `.venv`, installs the harness and, if one exists for your system, the `carla==0.9.16` client, then runs a self-check. A missing CARLA client is not an error: the script prints a note and the bicycle backend works as normal. This is always the case on macOS. If CARLA is not in `%USERPROFILE%\CARLA_0.9.16` or `C:\CARLA_0.9.16`, pass `-CarlaRoot <path>` or set the `CARLA_ROOT` environment variable.
 
 Activate the environment with `.venv\Scripts\Activate.ps1` (Linux: `source .venv/bin/activate`). If PowerShell blocks the activation script, call `.venv\Scripts\python.exe` directly instead of `python`.
 
@@ -130,6 +139,8 @@ All commands are `python -m autocross <command> --help`.
 | `show-track F.yaml` | Validate a course, print stats and reference time, and save a preview PNG |
 | `plot RUN_DIR` | Regenerate `report.png` |
 | `calibrate --backend carla` | Measure the vehicle's acceleration, braking and lateral grip limits |
+| `compare -c CTRL -t TRACK [-t TRACK ...]` | Run the same controller on CARLA and on the bicycle model and report lap-time difference and speed-profile RMS per course. Exits 1 if any course differs by more than `--tolerance` (default 1%). `--carla-runs DIR` reuses earlier CARLA runs |
+| `fit-bicycle RUN_DIR... [--write]` | Fit the bicycle model to the telemetry of CARLA runs; `--write` stores the result in `config/sim.yaml` |
 | `check` | Verify the install and CARLA connectivity |
 
 ### Run outputs (`runs/<timestamp>_<team>_<course>/`)
@@ -157,31 +168,31 @@ obstacles:
   - {s: 120, offset: 1.0, width: 2.0}          # station along the course, lateral offset, width
 ```
 
-### Test course vs. evaluation course
+### Test courses vs. evaluation courses
 
-| Course | Where | Who sees it |
-|---|---|---|
-| `tracks/hackathon_test.yaml` | in the repo | teams: develop and test here |
-| `tracks/practice_*.yaml` | in the repo | teams: extra practice (open, closed loop, obstacles) |
-| `tracks/private/*.yaml` | git-ignored | organisers only: the scored evaluation course |
+| Course | What it is |
+|---|---|
+| `tracks/hackathon_test.yaml` | the main test course: develop and test here |
+| `tracks/practice_basic.yaml` | short open course: corners, a slalom and a hairpin |
+| `tracks/practice_obstacles.yaml` | open course with unmapped obstacle groups |
+| `tracks/practice_loop.yaml` | closed course, 2 laps |
+| `tracks/practice_technical.yaml` | technical course: fast narrow kink, a braking zone into a hairpin, decreasing radius, esses, obstacle gates |
 
-The evaluation course has a different layout from the test course (different corner sequence, slaloms and obstacle positions) but the same kinds of elements and width. A controller tuned to the exact shape of the test course will not carry over, so build controllers that work from `obs.road` alone. To check this before the event, test on random courses as well:
+Scoring uses **unreleased evaluation courses** that only the judges have:
+
+- a **main course** with a different layout from `hackathon_test` (different corner sequence, slaloms and obstacle positions) but the same kinds of elements and width;
+- a **technical course** that is deliberately hard for controllers that only react to the road right in front of them. `practice_technical` has the same kinds of elements in milder form.
+
+A controller tuned to the exact shape of the test courses will not carry over. Build controllers that work from `obs.road` alone, plan their path and speed ahead, and handle obstacles. Before the event, also test on random courses:
 
 ```powershell
 python -m autocross gen-track --seed 42 --obstacles 3 --out tracks\my_random.yaml --preview
 ```
 
-**For organisers:** put evaluation courses in `tracks/private/` (or anywhere outside the repo) and do not share them before scoring. `gen-track` is deterministic, so a course made with a small or guessable seed can be regenerated by anyone. Leave out `--seed` and `gen-track` uses a random seed that is never shown or saved, and names the course after the output file:
+**For judges:** the evaluation courses, reference checks and scoring scripts are in a separate private repository, cloned into `tracks/private/`. That folder is git-ignored, and team controllers cannot read anything under `tracks/`. Put team submissions in `teams/` (also git-ignored). To make a new secret course, leave out `--seed`: `gen-track` then uses a random seed that is never shown or saved. A course made with a small or guessable seed can be regenerated by anyone.
 
 ```powershell
-python -m autocross gen-track --obstacles 4 --out tracks\private\hackathon_eval.yaml --preview
-```
-
-`tracks/private/hackathon_eval.yaml` is already set up this way. Score with:
-
-```powershell
-python -m autocross run -c teams\<team>.py -t tracks\private\hackathon_eval.yaml --team <team> --no-render
-python -m autocross leaderboard --track hackathon_eval --award
+python -m autocross gen-track --obstacles 4 --out tracks\private\my_eval.yaml --preview
 ```
 
 ---
@@ -213,6 +224,19 @@ python -m autocross leaderboard --track hackathon_eval --award
 
 Re-run `python -m autocross calibrate --backend carla` after changing the vehicle, and update the published limits.
 
+**Matching the bicycle model to CARLA.** Students develop on the bicycle model and are scored in CARLA, so the two should agree. The bicycle parameters in `vehicle.bicycle` are fitted to CARLA telemetry: the fitter replays logged CARLA runs in 1.5 s windows, starting the bicycle model from the logged state with the logged actuator commands, and tunes grip, tyre stiffness, drive and brake force, power, drag, steering lag, brake/drive split, yaw inertia and CG height until body velocities, yaw rate and wheel angle match. Mass, wheelbase and CG position are copied from the CARLA vehicle, so controllers also see the same `VehicleParams` on both backends. On the reference machine, with CARLA running:
+
+```powershell
+# 1. drive CARLA and the current bicycle model on several courses
+python -m autocross compare -c controllers\baseline_pure_pursuit.py -t tracks\hackathon_test.yaml -t tracks\practice_loop.yaml -t tracks\practice_obstacles.yaml -t tracks\practice_basic.yaml
+# 2. fit to those CARLA runs and write config\sim.yaml (takes a couple of minutes)
+python -m autocross fit-bicycle runs\<stamp>_compare --write
+# 3. check agreement again without re-driving CARLA
+python -m autocross compare -c controllers\baseline_pure_pursuit.py -t tracks\hackathon_test.yaml -t tracks\practice_loop.yaml -t tracks\practice_obstacles.yaml -t tracks\practice_basic.yaml --carla-runs runs\<stamp>_compare
+```
+
+To check that the fit generalises, include CARLA runs from more than one controller (or the baseline with a more aggressive `--controller-config`), and compare on a course the fit did not see. Repeat the fit after changing the CARLA vehicle setup, then commit `config/sim.yaml` so students get the new values.
+
 ---
 
 ## Toward MIL / SIL
@@ -238,10 +262,10 @@ autocross/            harness package
   metrics.py, score.py, plot.py, viewer.py
   track.py, trackgen.py, geometry.py
   backends/           carla_backend.py, bicycle.py
-  cli.py, calibrate.py, config.py
+  cli.py, calibrate.py, fit.py, config.py
 config/               sim.yaml, scoring.yaml, robustness.yaml
 controllers/          baseline_pure_pursuit.py, template_controller.py
-tracks/               hackathon_test + practice courses (private/ = evaluation, git-ignored)
+tracks/               hackathon_test + practice courses (private/ = judges' evaluation repo, git-ignored)
 scripts/              setup and CARLA launch scripts (PowerShell + bash)
 tests/                pytest suite (bicycle backend, no CARLA needed)
 ```
@@ -249,7 +273,7 @@ tests/                pytest suite (bicycle backend, no CARLA needed)
 ## Development
 
 ```powershell
-python -m pytest            # 41 tests, ~25 s, no CARLA required
+python -m pytest            # 44 tests, ~30 s, no CARLA required
 ```
 
 The official event scoring should be run on a single reference machine, because the 50 ms deadline depends on the machine.

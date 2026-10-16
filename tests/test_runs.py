@@ -29,6 +29,12 @@ def test_baseline_finishes_test_course(cfg, root, tmp_path):
     assert s["metrics"]["penalties"]["off_course"] == 0 and s["metrics"]["penalties"]["missed_gate"] == 0
 
 
+def test_baseline_finishes_technical_course(cfg, root, tmp_path):
+    s = _run(cfg, root, root / "controllers" / "baseline_pure_pursuit.py", tmp_path, track="practice_technical")
+    assert s["metrics"]["completion"]["finished"]
+    assert s["metrics"]["penalties"]["off_course"] == 0 and s["metrics"]["penalties"]["missed_gate"] == 0
+
+
 def test_controller_cannot_read_course_files(cfg, root, tmp_path):
     s = _run(cfg, root, root / "tests" / "controllers" / "snoop_controller.py", tmp_path)
     assert s["metrics"]["completion"]["dnf_reason"] == "controller_error"

@@ -265,12 +265,12 @@ def cmd_selftest(a):
         print(f"{r[0]:<22}{r[1]:<9}{r[2]:<26}{t:>7}{r[4]:>7}{r[5]:>5}{r[6]:>6}{r[7]:>8.1f}ms{r[8]:>7.1f}")
     tech = [r[8] for r in rows]
     print(f"\nmean technical points {sum(tech) / len(tech):.1f} / 75 (the evaluation uses unreleased courses; "
-          "see README 'Official evaluation')")
+          "see docs/HARNESS.md 'Official evaluation')")
     for course, be, err in errors[:3]:
         last = err.strip().splitlines()[-1]
         print(f"\ncontroller error on {course} [{be}]: {last}")
         if "controllers may not" in err:
-            print("  -> this breaks a sandbox rule (README 'Rules the harness enforces'); the same error happens "
+            print("  -> this breaks a sandbox rule (docs/HARNESS.md 'Rules the harness enforces'); the same error happens "
                   "in the evaluation")
     if not a.carla:
         print("\nbicycle model only; add --carla to also run on CARLA (server running)")

@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TIDE Walk</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: full-bleed 3D sidewalk; glass HUD top; guidance strip bottom (what the cane tells the user); dock right. Dark-first. */
+:root{
+  --bg:#07090c; --glass:rgba(14,17,22,.74); --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.16);
+  --fg:#eef0f3; --muted:#8b93a3; --accent:#2ee6ff; --warn:#ffb020; --bad:#ff4d62; --good:#3fe08a; --obs:#ff8a1f;
+  --display:"Barlow Condensed","Arial Narrow",Impact,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:14px; --shadow:0 18px 50px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06); color-scheme:dark;
+}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--mono);overflow:hidden}
+#root{position:fixed;inset:0}
+#stage{position:fixed;inset:0;touch-action:none}
+#stage canvas{display:block;width:100%!important;height:100%!important}
+.hud{position:fixed;left:0;right:0;top:0;padding:14px max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px));padding-top:calc(14px + env(safe-area-inset-top,0px));display:flex;gap:10px;flex-wrap:wrap;pointer-events:none;z-index:5}
+.brand{padding:10px 16px 10px 14px;background:var(--glass);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);backdrop-filter:blur(14px) saturate(140%)}
+.brand .n{font-family:var(--display);font-weight:800;font-size:30px;line-height:1}
+.brand .n b{color:var(--accent)}
+.brand small{display:block;font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin-top:5px}
+.tiles{display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:var(--glass);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);backdrop-filter:blur(14px) saturate(140%)}
+.tile{min-width:92px;padding:6px 12px;border-radius:9px;background:rgba(255,255,255,.03);border:1px solid var(--line)}
+.tile .k{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font-family:var(--display);font-weight:700;font-size:28px;line-height:1.05;font-variant-numeric:tabular-nums}
+.tile .u{font-size:10.5px;color:var(--muted);margin-left:5px;font-family:var(--mono)}
+.tile.o .v{color:var(--obs)} .tile.a .v{color:var(--accent)} .tile.g .v{color:var(--good)}
+.dock{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:5;display:flex;flex-direction:column;gap:8px;width:min(300px,calc(100vw - 32px))}
+.panel{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;backdrop-filter:blur(14px) saturate(140%);box-shadow:var(--shadow)}
+.lbl{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.lbl::after{content:"";flex:1;height:1px;background:var(--line)}
+.row{display:flex;gap:7px;flex-wrap:wrap}
+button{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--fg);background:rgba(255,255,255,.05);border:1px solid var(--line2);border-radius:9px;padding:8px 12px;cursor:pointer;transition:background .18s,border-color .18s,transform .08s}
+button:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.28)} button:active{transform:translateY(1px)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:linear-gradient(180deg,#3ff0ff,#13a9c4);color:#06161a;border-color:transparent;font-weight:600;box-shadow:0 6px 18px rgba(46,230,255,.3)}
+button.obs{border-color:rgba(255,138,31,.6);color:var(--obs)} button.obs:hover{background:rgba(255,138,31,.12)}
+button.active{border-color:var(--accent);color:var(--accent);background:rgba(46,230,255,.08)}
+.guide{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));z-index:5;width:min(560px,calc(100vw - 32px));pointer-events:none}
+.guide .card{background:var(--glass);border:1px solid var(--line2);border-radius:16px;padding:12px 16px;backdrop-filter:blur(14px);box-shadow:var(--shadow);display:grid;grid-template-columns:64px 1fr;gap:14px;align-items:center}
+.guide .arrow{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;background:rgba(46,230,255,.1);border:1px solid rgba(46,230,255,.35);font-family:var(--display);font-size:34px;font-weight:800;color:var(--accent);transition:transform .25s,background .25s,border-color .25s}
+.guide .arrow.warn{background:rgba(255,176,32,.12);border-color:rgba(255,176,32,.5);color:var(--warn)}
+.guide .arrow.bad{background:rgba(255,77,98,.14);border-color:rgba(255,77,98,.6);color:var(--bad)}
+.guide .t{font-family:var(--display);font-size:24px;font-weight:700;line-height:1.05}
+.guide .s{color:var(--muted);font-size:12px;margin-top:3px;line-height:1.45}
+.guide .haptic{display:flex;gap:4px;margin-top:8px}
+.guide .haptic i{display:block;width:10px;height:10px;border-radius:2px;background:rgba(255,255,255,.08);border:1px solid var(--line)}
+.guide .haptic i.on{background:var(--accent);border-color:var(--accent);box-shadow:0 0 8px var(--accent)}
+.guide .haptic i.on.warn{background:var(--warn);border-color:var(--warn);box-shadow:0 0 8px var(--warn)}
+.note{position:fixed;left:max(16px,env(safe-area-inset-left,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:5;font-size:11px;color:var(--muted);max-width:36ch;line-height:1.55;text-shadow:0 1px 8px rgba(0,0,0,.8)}
+.note b{color:var(--fg);font-weight:600}
+.toast{position:fixed;left:50%;top:calc(108px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--glass);border:1px solid var(--line2);border-left:3px solid var(--accent);padding:12px 16px;border-radius:12px;font-size:13px;z-index:6;opacity:0;transition:opacity .3s;pointer-events:none;max-width:min(560px,calc(100vw - 32px));backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+.toast.show{opacity:1}
+.toast .tt{font-family:var(--display);font-size:22px;font-weight:700;margin-bottom:3px}
+@media (max-width:760px){.brand .n{font-size:22px}.tile{min-width:76px}.tile .v{font-size:21px}.note{display:none}.dock{width:calc(100vw - 32px);right:16px}.guide{bottom:calc(200px + env(safe-area-inset-bottom,0px))}}
+@media (prefers-reduced-motion:reduce){.guide .arrow,.toast,button{transition:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+'use strict';
+const {useState,useEffect,useRef,useCallback}=React;const h=React.createElement;
+
+// ================================================================== TIDE planner, pedestrian parameters
+// The same pipeline as the autocross controller: corridor from perceived edges -> min-curvature path
+// inside it -> curvature-limited speed profile -> look-ahead tracking. Scaled for a walking person.
+const G=9.81, RANGE=12, STEP=0.25;                       // 12 m of sidewalk seen ahead by the cane's sensor
+const P={vMax:1.4, aLat:0.9, aAcc:0.6, aDec:1.2, margin:0.45, obsClear:0.55, obsLen:1.2, wSmooth:0.05, wCenter:0.0005, vHor:0.5, planDec:0.7, ld:1.6, turnRate:1.4};
+function interp(x,xs,ys){const n=xs.length;if(x<=xs[0])return ys[0];if(x>=xs[n-1])return ys[n-1];let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(xs[m]<=x)lo=m;else hi=m;}const t=(x-xs[lo])/(xs[hi]-xs[lo]||1e-9);return ys[lo]+t*(ys[hi]-ys[lo]);}
+function curvature(px,py){const n=px.length,k=new Float64Array(n);if(n<3)return k;for(let i=1;i<n-1;i++){const dx=(px[i+1]-px[i-1])/2,dy=(py[i+1]-py[i-1])/2,ddx=px[i+1]-2*px[i]+px[i-1],ddy=py[i+1]-2*py[i]+py[i-1];k[i]=(dx*ddy-dy*ddx)/Math.max(Math.pow(dx*dx+dy*dy,1.5),1e-6);}k[0]=k[1];k[n-1]=k[n-2];return k;}
+
+// ---- sidewalk course: a city block with turns, a narrowing, a crossing
+function buildCourse(){
+  const segs=[{t:'s',l:18},{t:'a',r:6,a:-90},{t:'s',l:14,w:2.0},{t:'a',r:5,a:90},{t:'s',l:10},{t:'a',r:8,a:90},{t:'s',l:22,w:3.2},{t:'a',r:6,a:-90},{t:'s',l:16}];
+  const hh=0.05;let x=0,y=0,yaw=0;const pts=[[0,0]],w=[2.6];
+  for(const s of segs){const sw=s.w||2.6;if(s.t==='s'){const n=Math.round(s.l/hh);for(let i=0;i<n;i++){x+=hh*Math.cos(yaw);y+=hh*Math.sin(yaw);pts.push([x,y]);w.push(sw);}}else{const ang=s.a*Math.PI/180,len=Math.abs(ang)*s.r,n=Math.round(len/hh),d=ang/n;for(let i=0;i<n;i++){yaw+=d/2;x+=hh*Math.cos(yaw);y+=hh*Math.sin(yaw);yaw+=d/2;pts.push([x,y]);w.push(sw);}}}
+  const rs=[0];for(let i=1;i<pts.length;i++)rs.push(rs[i-1]+Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]));
+  const total=rs[rs.length-1],N=Math.floor(total/STEP)+1;const cx=new Float64Array(N),cy=new Float64Array(N),cw=new Float64Array(N),hd=new Float64Array(N);
+  const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+  for(let i=0;i<N;i++){const s=i*STEP;cx[i]=interp(s,rs,xs);cy[i]=interp(s,rs,ys);cw[i]=interp(s,rs,w);}
+  for(let i=0;i<N;i++){const a=Math.max(i-1,0),b=Math.min(i+1,N-1);hd[i]=Math.atan2(cy[b]-cy[a],cx[b]-cx[a]);}
+  // fixed street furniture (always present): a lamp post, a bench, a sign
+  const fixed=[{s:9,lat:0.9,r:0.18,kind:'post'},{s:34,lat:-0.7,r:0.5,kind:'bench'},{s:62,lat:0.8,r:0.22,kind:'sign'},{s:86,lat:-0.9,r:0.3,kind:'bin'}];
+  return {cx,cy,cw,hd,N,total,fixed,finish:total-2};
+}
+function project(course,x,y,hint){let best=hint,bd=Infinity;const i0=Math.max(Math.floor(hint/STEP)-40,0),i1=Math.min(Math.floor(hint/STEP)+60,course.N-1);for(let i=i0;i<=i1;i++){const d=(course.cx[i]-x)**2+(course.cy[i]-y)**2;if(d<bd){bd=d;best=i*STEP;}}return best;}
+function roadModel(course,ped,obstacles){
+  const sV=project(course,ped.x,ped.y,ped.sHint);ped.sHint=sV;ped.progress=sV;
+  const i=Math.min(Math.round(sV/STEP),course.N-1);const hd=course.hd[i];const nx=-Math.sin(hd),ny=Math.cos(hd);
+  const lateral=(ped.x-course.cx[i])*nx+(ped.y-course.cy[i])*ny;
+  const K=Math.floor(RANGE/STEP)+1;const s=new Float64Array(K),clx=new Float64Array(K),cly=new Float64Array(K),wl=new Float64Array(K),wr=new Float64Array(K);
+  const c=Math.cos(ped.yaw),sn=Math.sin(ped.yaw);let valid=0;
+  for(let k=0;k<K;k++){const ss=sV+k*STEP;if(ss>course.total)break;const j=Math.min(Math.round(ss/STEP),course.N-1);const dx=course.cx[j]-ped.x,dy=course.cy[j]-ped.y;s[k]=k*STEP;clx[k]=c*dx+sn*dy;cly[k]=-sn*dx+c*dy;wl[k]=course.cw[j]/2;wr[k]=course.cw[j]/2;valid=k+1;}
+  const obs=[];for(const g of obstacles){const d=g.s-sV;if(d<-1||d>RANGE)continue;obs.push({distance:d,latMin:g.lat-g.r,latMax:g.lat+g.r,kind:g.kind});}
+  return {s:s.subarray(0,valid),clx:clx.subarray(0,valid),cly:cly.subarray(0,valid),wl:wl.subarray(0,valid),wr:wr.subarray(0,valid),lateral,obstacles:obs,finish:course.finish-sV};
+}
+class Planner{
+  constructor(){this.prevE=null;this.prevS0=null;this.sideMem=new Map();}
+  step(ped,obs){
+    const t0=performance.now();const K=obs.s.length,s=obs.s,clx=obs.clx,cly=obs.cly,v=ped.v;
+    const nx=new Float64Array(K),ny=new Float64Array(K);for(let i=0;i<K;i++){const a=Math.max(i-1,0),b=Math.min(i+1,K-1);const tx=clx[b]-clx[a],ty=cly[b]-cly[a];const n=Math.hypot(tx,ty)||1e-6;nx[i]=-ty/n;ny[i]=tx/n;}
+    const lo=new Float64Array(K),hi=new Float64Array(K);
+    for(let i=0;i<K;i++){lo[i]=-(obs.wr[i]-P.margin);hi[i]=obs.wl[i]-P.margin;if(hi[i]<lo[i]){const m=(lo[i]+hi[i])/2;lo[i]=hi[i]=m;}}
+    let blocked=null;
+    for(const ob of obs.obstacles){
+      const d=ob.distance,key=Math.round((ped.progress+d)*2);const id=Math.min(Math.max(Math.round(d/STEP),0),K-1);
+      const roomL=(obs.wl[id]-P.margin)-(ob.latMax+P.obsClear),roomR=(ob.latMin-P.obsClear)-(-(obs.wr[id]-P.margin));
+      let side=this.sideMem.get(key);
+      if(side===undefined){if(roomL>roomR+0.15)side=1;else if(roomR>roomL+0.15)side=-1;else{const cur=this.prevE?interp(d,s,this.prevE):0;side=cur>=(ob.latMin+ob.latMax)/2?1:-1;}this.sideMem.set(key,side);}
+      if(Math.max(roomL,roomR)<0.05&&d>0&&(blocked===null||d<blocked))blocked=d;
+      for(let i=0;i<K;i++){if(s[i]<d-P.obsLen||s[i]>d+P.obsLen)continue;if(side>0)lo[i]=Math.max(lo[i],ob.latMax+P.obsClear);else hi[i]=Math.min(hi[i],ob.latMin-P.obsClear);if(lo[i]>hi[i]){const m=(lo[i]+hi[i])/2;lo[i]=hi[i]=m;}}
+    }
+    const e0=obs.lateral;let e=new Float64Array(K);
+    if(this.prevE&&this.prevS0!==null){const sh=ped.progress-this.prevS0;for(let i=0;i<K;i++)e[i]=interp(s[i]+sh,s,this.prevE);}else for(let i=0;i<K;i++)e[i]=(lo[i]+hi[i])/2;
+    for(let i=0;i<K;i++)e[i]=Math.min(Math.max(e[i],lo[i]),hi[i]);
+    const kc=curvature(clx,cly);const b=new Float64Array(K);for(let i=0;i<K;i++)b[i]=kc[i]*STEP*STEP;
+    e[0]=e0;const e1=Math.min(Math.max((0-cly[1])/Math.max(ny[1],0.5),lo[1]),hi[1]);e[1]=e1;
+    const wc=1,w0=P.wCenter,ws=P.wSmooth;
+    for(let it=0;it<30;it++)for(let col=0;col<3;col++)for(let i=2+col;i<K;i+=3){let num=0,den=w0;const ex=j=>(j<0||j>=K?0:e[j]),bx=j=>(j<0||j>=K?0:b[j]),ok=j=>(j>=1&&j<=K-2);
+      if(ok(i-1)){num-=wc*(ex(i-2)-2*ex(i-1)+bx(i-1));den+=wc;} if(ok(i)){num+=2*wc*(ex(i-1)+ex(i+1)+bx(i));den+=4*wc;} if(ok(i+1)){num-=wc*(-2*ex(i+1)+ex(i+2)+bx(i+1));den+=wc;}
+      if(i>0){num+=ws*ex(i-1);den+=ws;} if(i<K-1){num+=ws*ex(i+1);den+=ws;} e[i]=Math.min(Math.max(num/den,lo[i]),hi[i]);}
+    e[0]=e0;e[1]=e1;this.prevE=Float64Array.from(e);this.prevS0=ped.progress;
+    const px=new Float64Array(K),py=new Float64Array(K);for(let i=0;i<K;i++){px[i]=clx[i]+nx[i]*e[i];py[i]=cly[i]+ny[i]*e[i];}
+    // speed profile (walking pace, slows for turns and narrow gaps; stops if the way is blocked)
+    const kap=curvature(px,py);const seg=new Float64Array(K);for(let i=0;i<K-1;i++)seg[i]=Math.hypot(px[i+1]-px[i],py[i+1]-py[i]);seg[K-1]=seg[K-2]||STEP;
+    const gap=new Float64Array(K);for(let i=0;i<K;i++)gap[i]=hi[i]-lo[i];
+    const vcap=new Float64Array(K);for(let i=0;i<K;i++){let vc=Math.min(Math.sqrt(P.aLat/Math.max(Math.abs(kap[i]),1e-3)),P.vMax);if(gap[i]<0.6)vc=Math.min(vc,0.7);vcap[i]=vc;}
+    const fin=obs.finish;if(fin>=0&&fin<=RANGE)for(let i=0;i<K;i++)if(s[i]>=fin-0.5)vcap[i]=0.0;
+    if(blocked!==null)for(let i=0;i<K;i++)if(s[i]>=blocked-0.8)vcap[i]=0.0;
+    if(!(fin>=0&&s[K-1]>=fin-0.5)&&blocked===null)for(let i=0;i<K;i++)vcap[i]=Math.min(vcap[i],Math.sqrt(P.vHor*P.vHor+2*P.aDec*Math.max(s[K-1]-s[i],0)));
+    const vp=Float64Array.from(vcap);vp[0]=v;
+    for(let i=1;i<K;i++)vp[i]=Math.min(vp[i],Math.sqrt(vp[i-1]*vp[i-1]+2*P.aAcc*seg[i-1]));
+    for(let i=K-2;i>0;i--)vp[i]=Math.min(vp[i],Math.sqrt(vp[i+1]*vp[i+1]+2*P.aDec*P.planDec*seg[i]));
+    const ps=new Float64Array(K);for(let i=1;i<K;i++)ps[i]=ps[i-1]+seg[i-1];
+    const look=Math.max(v*0.5,0.6);let aReq=Infinity;for(let c=0;c<4;c++){const d=0.6+(Math.max(look,0.8)-0.6)*c/3;const vl=interp(d,ps,vp);const a=(vl*vl-v*v)/(2*d);if(a<aReq)aReq=a;}
+    aReq=Math.min(Math.max(aReq,-P.aDec),P.aAcc);
+    // heading: pure pursuit on the planned path
+    const tx=interp(P.ld,ps,px),ty=interp(P.ld,ps,py);const alpha=Math.atan2(ty,Math.max(tx,0.05));
+    const turn=Math.min(Math.max(alpha*2.2,-P.turnRate),P.turnRate);
+    // guidance cue for the user: lateral offset of the path 1.5 m ahead, in the person's frame
+    const cueY=interp(1.5,ps,py);const nearest=obs.obstacles.length?Math.min(...obs.obstacles.map(o=>o.distance)):Infinity;
+    return {px,py,vp,aReq,turn,cueY,blocked,nearest,gapMin:Math.min(...gap.subarray(0,Math.min(K,24))),ms:performance.now()-t0};
+  }
+}
+class Ped{constructor(x,y,yaw){Object.assign(this,{x,y,yaw,v:0,progress:0,sHint:0});}
+  tick(dt,plan){if(!plan)return;this.v=Math.max(0,Math.min(this.v+plan.aReq*dt,P.vMax));this.yaw+=plan.turn*dt*Math.min(this.v/0.6+0.3,1.2);this.x+=this.v*Math.cos(this.yaw)*dt;this.y+=this.v*Math.sin(this.yaw)*dt;}}
+
+// ================================================================== 3D scene
+function buildScene(stage){
+  const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;stage.appendChild(renderer.domElement);
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x07090c);scene.fog=new THREE.Fog(0x07090c,60,180);
+  const camera=new THREE.PerspectiveCamera(50,1,0.1,600);
+  scene.add(new THREE.HemisphereLight(0xdde6ff,0x15181d,0.9));scene.add(new THREE.AmbientLight(0xffffff,0.2));
+  const sun=new THREE.DirectionalLight(0xfff1dc,1.4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-25,right:25,top:25,bottom:-25,near:5,far:120});sun.shadow.bias=-0.0008;scene.add(sun);scene.add(sun.target);
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(600,600),new THREE.MeshStandardMaterial({color:0x0e1114,roughness:.95}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+  const grid=new THREE.GridHelper(600,120,0x1a1e25,0x14181e);grid.position.y=0.005;grid.material.transparent=true;grid.material.opacity=.45;scene.add(grid);
+  return {renderer,scene,camera,sun};
+}
+function buildCourseMeshes(course,scene){
+  const g=new THREE.Group();const N=course.N;
+  // sidewalk slab
+  const pos=new Float32Array(N*6),idx=[];for(let i=0;i<N;i++){const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]),hw=course.cw[i]/2;pos.set([course.cx[i]+nx*hw,0.05,-(course.cy[i]+ny*hw)],i*6);pos.set([course.cx[i]-nx*hw,0.05,-(course.cy[i]-ny*hw)],i*6+3);if(i<N-1)idx.push(i*2,i*2+1,i*2+2,i*2+1,i*2+3,i*2+2);}
+  const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.BufferAttribute(pos,3));rg.setIndex(idx);rg.computeVertexNormals();
+  const walk=new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color:0x4a515c,roughness:.9,side:THREE.DoubleSide}));walk.receiveShadow=true;g.add(walk);
+  // kerb edges + tactile strip (centre line the planner references)
+  for(const side of [1,-1]){const ep=new Float32Array(N*3);for(let i=0;i<N;i++){const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]),hw=course.cw[i]/2;ep.set([course.cx[i]+side*nx*hw,0.1,-(course.cy[i]+side*ny*hw)],i*3);}const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.BufferAttribute(ep,3));g.add(new THREE.Line(eg,new THREE.LineBasicMaterial({color:0xaab2bf})));}
+  // kerb blocks every 1 m
+  const kerbGeo=new THREE.BoxGeometry(0.9,0.12,0.14);const kerbMat=new THREE.MeshStandardMaterial({color:0x8f98a6,roughness:.8});
+  for(let s=0;s<course.total;s+=1){const i=Math.min(Math.round(s/STEP),N-1);for(const side of [1,-1]){const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]),hw=course.cw[i]/2+0.07;const m=new THREE.Mesh(kerbGeo,kerbMat);m.position.set(course.cx[i]+side*nx*hw,0.06,-(course.cy[i]+side*ny*hw));m.rotation.y=-course.hd[i];m.castShadow=true;g.add(m);}}
+  // buildings with facades along the outside
+  const palette=[0x3a3f48,0x4a3c36,0x33414a,0x45403a,0x2f3a44];
+  const winMat=new THREE.MeshStandardMaterial({color:0xffe9b3,emissive:0xffd27a,emissiveIntensity:.55,roughness:.5});
+  const winDark=new THREE.MeshStandardMaterial({color:0x1a2230,roughness:.3,metalness:.4});
+  const doorMat=new THREE.MeshStandardMaterial({color:0x5a3a22,roughness:.8});
+  let bi=0;
+  for(let s=1;s<course.total-3;s+=7){const i=Math.min(Math.round(s/STEP),N-1);const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]);const side=(bi%3===0)?1:-1;const off=course.cw[i]/2+2.6;const floors=2+(bi*5)%4;const hgt=floors*3.1;const wdt=6.2,dep=4;
+    const bld=new THREE.Group();const body=new THREE.Mesh(new THREE.BoxGeometry(wdt,hgt,dep),new THREE.MeshStandardMaterial({color:palette[bi%palette.length],roughness:.92}));body.position.y=hgt/2;body.castShadow=true;body.receiveShadow=true;bld.add(body);
+    // roof lip
+    const lip=new THREE.Mesh(new THREE.BoxGeometry(wdt+0.3,0.25,dep+0.3),new THREE.MeshStandardMaterial({color:0x22262c,roughness:.9}));lip.position.y=hgt+0.12;bld.add(lip);
+    // windows on the street-facing side (face toward the sidewalk = -side along the normal)
+    for(let f=0;f<floors;f++)for(let c=0;c<3;c++){const lit=((bi*7+f*3+c)%5)!==0;const w=new THREE.Mesh(new THREE.BoxGeometry(1.0,1.3,0.08),lit?winMat:winDark);w.position.set(-wdt/2+1.2+c*1.9,f*3.1+1.9,-side*(dep/2+0.04));bld.add(w);
+      const sill=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.08,0.18),new THREE.MeshStandardMaterial({color:0x9aa3b2}));sill.position.set(-wdt/2+1.2+c*1.9,f*3.1+1.2,-side*(dep/2+0.08));bld.add(sill);}
+    const door=new THREE.Mesh(new THREE.BoxGeometry(1.1,2.2,0.1),doorMat);door.position.set(wdt/2-1.2,1.1,-side*(dep/2+0.05));bld.add(door);
+    bld.position.set(course.cx[i]+side*nx*off,0,-(course.cy[i]+side*ny*off));bld.rotation.y=-course.hd[i];g.add(bld);bi++;}
+  // trees on the open side, lamp posts every 15 m
+  const trunkMat=new THREE.MeshStandardMaterial({color:0x5a4332,roughness:.9}),leafMat=new THREE.MeshStandardMaterial({color:0x2f6b3a,roughness:.8});
+  for(let s=4;s<course.total-4;s+=9){const i=Math.min(Math.round(s/STEP),N-1);const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]);const side=(Math.floor(s/7)%3===0)?-1:1;const off=course.cw[i]/2+1.3;
+    const t=new THREE.Group();const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.16,2.2,8),trunkMat);trunk.position.y=1.1;trunk.castShadow=true;t.add(trunk);
+    const crown=new THREE.Mesh(new THREE.SphereGeometry(1.3+((s*3)%5)*0.12,12,10),leafMat);crown.position.y=3.0;crown.scale.y=1.2;crown.castShadow=true;t.add(crown);
+    t.position.set(course.cx[i]+side*nx*off,0,-(course.cy[i]+side*ny*off));g.add(t);}
+  const lampMat=new THREE.MeshStandardMaterial({color:0x2a2f38,metalness:.6,roughness:.4}),bulbMat=new THREE.MeshStandardMaterial({color:0xfff2cc,emissive:0xffe0a0,emissiveIntensity:1.6});
+  for(let s=12;s<course.total-4;s+=15){const i=Math.min(Math.round(s/STEP),N-1);const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]);const off=course.cw[i]/2+0.35;
+    const l=new THREE.Group();const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.09,4.2,8),lampMat);pole.position.y=2.1;pole.castShadow=true;l.add(pole);
+    const arm=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.08,0.08),lampMat);arm.position.set(-0.4,4.1,0);l.add(arm);const bulb=new THREE.Mesh(new THREE.SphereGeometry(0.16,10,10),bulbMat);bulb.position.set(-0.85,4.0,0);l.add(bulb);
+    const glow=new THREE.PointLight(0xffe0a0,0.6,9);glow.position.set(-0.85,3.9,0);l.add(glow);
+    l.position.set(course.cx[i]-nx*off,0,-(course.cy[i]-ny*off));l.rotation.y=-course.hd[i];g.add(l);}
+  // crosswalk stripes across the crossing section (around s = 55)
+  {const s0=54;for(let k=0;k<6;k++){const i=Math.min(Math.round((s0+k*0.7)/STEP),N-1);const m=new THREE.Mesh(new THREE.BoxGeometry(0.35,0.02,course.cw[i]-0.2),new THREE.MeshStandardMaterial({color:0xe8e8e8,roughness:.7}));m.position.set(course.cx[i],0.085,-course.cy[i]);m.rotation.y=-course.hd[i];g.add(m);}}
+  // finish marker
+  {const i=Math.min(Math.round(course.finish/STEP),N-1);const m=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.03,course.cw[i]),new THREE.MeshBasicMaterial({color:0x3fe08a}));m.position.set(course.cx[i],0.08,-course.cy[i]);m.rotation.y=-course.hd[i];g.add(m);}
+  scene.add(g);return g;
+}
+const OBS_KIND={post:{c:0x9aa3b2,h:3.0,r:0.09},bench:{c:0x6b4a2e,h:0.5,r:0.5},sign:{c:0xff8a1f,h:1.2,r:0.22},bin:{c:0x3a4250,h:0.9,r:0.3},cone:{c:0xff8a1f,h:0.6,r:0.2},person:{c:0x4d7cff,h:1.7,r:0.3},scooter:{c:0x2ee6ff,h:1.0,r:0.35},box:{c:0xb08a5a,h:0.7,r:0.4}};
+function personMesh(){const g=buildPed();g.children.forEach(c=>{if(c.material&&c.material.color&&c.material.color.getHex()===0x7a1f2b)c.material=new THREE.MeshStandardMaterial({color:0x2d5a8a,roughness:.65});});if(g.userData.armR)g.userData.armR.remove(g.userData.cane);g.remove(g.children.find(c=>c.geometry&&c.geometry.type==='CircleGeometry'));g.rotation.y=Math.PI;return g;}
+function obstacleMesh(kind){if(kind==='person')return personMesh();const k=OBS_KIND[kind]||OBS_KIND.cone;const m=new THREE.Mesh(kind==='cone'?new THREE.ConeGeometry(k.r,k.h,12):kind==='person'?new THREE.CylinderGeometry(k.r*0.8,k.r,k.h,12):new THREE.CylinderGeometry(k.r,k.r,k.h,14),new THREE.MeshStandardMaterial({color:k.c,emissive:kind==='cone'||kind==='sign'?0x4a2600:0x000000,emissiveIntensity:.6,roughness:.6}));m.position.y=k.h/2;m.castShadow=true;return m;}
+function buildPed(){
+  const g=new THREE.Group();
+  const skin=new THREE.MeshStandardMaterial({color:0xd9b48f,roughness:.7}),hair=new THREE.MeshStandardMaterial({color:0x2b1d14,roughness:.9});
+  const coat=new THREE.MeshStandardMaterial({color:0x7a1f2b,roughness:.65}),trous=new THREE.MeshStandardMaterial({color:0x232833,roughness:.8}),shoe=new THREE.MeshStandardMaterial({color:0x111318,roughness:.6});
+  const mk=(geo,mat,x,y,z)=>{const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);m.castShadow=true;return m;};
+  // torso (slightly tapered), shoulders, neck
+  g.add(mk(new THREE.CylinderGeometry(0.19,0.17,0.62,16),coat,0,1.12,0));
+  g.add(mk(new THREE.SphereGeometry(0.2,14,12),coat,0,1.43,0));
+  g.add(mk(new THREE.CylinderGeometry(0.06,0.07,0.12,10),skin,0,1.5,0));
+  // head + hair + ear-level sunglasses band
+  const head=mk(new THREE.SphereGeometry(0.14,18,16),skin,0,1.66,0);g.add(head);
+  const hr=mk(new THREE.SphereGeometry(0.145,18,16,0,Math.PI*2,0,Math.PI*0.55),hair,0,1.69,0);g.add(hr);
+  g.add(mk(new THREE.BoxGeometry(0.26,0.05,0.14),new THREE.MeshStandardMaterial({color:0x0b0d10,roughness:.3,metalness:.5}),0.06,1.67,0));
+  // legs (pivot at hip), shoes
+  const legL=new THREE.Group(),legR=new THREE.Group();for(const [lg,z] of [[legL,0.1],[legR,-0.1]]){lg.position.set(0,0.82,z);const th=mk(new THREE.CylinderGeometry(0.085,0.075,0.78,12),trous,0,-0.39,0);lg.add(th);lg.add(mk(new THREE.BoxGeometry(0.26,0.09,0.12),shoe,0.06,-0.8,0));g.add(lg);}
+  // arms (pivot at shoulder)
+  const armL=new THREE.Group(),armR=new THREE.Group();for(const [ar,z] of [[armL,0.24],[armR,-0.24]]){ar.position.set(0,1.4,z);ar.add(mk(new THREE.CylinderGeometry(0.055,0.05,0.6,10),coat,0,-0.3,0));ar.add(mk(new THREE.SphereGeometry(0.055,10,10),skin,0,-0.62,0));g.add(ar);}
+  armL.rotation.x=0;armR.rotation.z=0;
+  // white cane held in the right hand, rolling tip ahead
+  const cane=new THREE.Group();const stick=new THREE.Mesh(new THREE.CylinderGeometry(0.013,0.013,1.25,8),new THREE.MeshStandardMaterial({color:0xf4f4f4,roughness:.35}));stick.position.y=-0.62;stick.castShadow=true;cane.add(stick);
+  const band=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,0.16,8),new THREE.MeshStandardMaterial({color:0xe0162a,roughness:.4}));band.position.y=-1.0;cane.add(band);
+  const tip=new THREE.Mesh(new THREE.SphereGeometry(0.05,12,12),new THREE.MeshStandardMaterial({color:0xffffff,emissive:0x2ee6ff,emissiveIntensity:.9}));tip.position.y=-1.24;cane.add(tip);
+  cane.position.set(0,-0.6,0);armR.add(cane);armR.rotation.z=0.0;armR.rotation.x=0.0;g.userData.cane=cane;g.userData.armR=armR;g.userData.armL=armL;g.userData.legL=legL;g.userData.legR=legR;
+  cane.rotation.x=-0.95;   // points forward-down
+  // sensor fan (what the cane "sees")
+  const fan=new THREE.Mesh(new THREE.CircleGeometry(RANGE,32,-0.55,1.1),new THREE.MeshBasicMaterial({color:0x2ee6ff,transparent:true,opacity:0.05,side:THREE.DoubleSide,depthWrite:false}));fan.rotation.x=-Math.PI/2;fan.position.y=0.02;g.add(fan);
+  return g;
+}
+
+// ================================================================== React app
+function App(){
+  const stageRef=useRef(null);const S=useRef(null);
+  const [hud,setHud]=useState({v:0,t:0,obs:0,near:Infinity,ms:0,gap:0,done:false});
+  const [cue,setCue]=useState({kind:'ok',title:'Walk ahead',sub:'Path is clear.',offset:0,hapt:[0,0,1,0,0]});
+  const [toast,setToast]=useState(null);const [cam,setCam]=useState('follow');const [paused,setPaused]=useState(false);
+  const showToast=useCallback((t,b)=>{setToast({t,b});clearTimeout(showToast.h);showToast.h=setTimeout(()=>setToast(null),3500);},[]);
+
+  useEffect(()=>{
+    const stage=stageRef.current;const {renderer,scene,camera,sun}=buildScene(stage);
+    const course=buildCourse();const courseG=buildCourseMeshes(course,scene);
+    const pedG=buildPed();scene.add(pedG);
+    const obsG=new THREE.Group();scene.add(obsG);
+    const pathGeo=new THREE.BufferGeometry();const pathMesh=new THREE.Mesh(pathGeo,new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,opacity:.95,side:THREE.DoubleSide,depthWrite:false}));scene.add(pathMesh);
+    const trailGeo=new THREE.BufferGeometry();const trail=new THREE.Mesh(trailGeo,new THREE.MeshBasicMaterial({color:0x4d7cff,transparent:true,opacity:.55,side:THREE.DoubleSide,depthWrite:false}));scene.add(trail);
+    const st={course,ped:null,planner:null,obstacles:[],plan:null,t:0,acc:0,ctrl:0,done:false,trailPts:[],camTarget:new THREE.Vector3(),camMode:'follow',paused:false,orbit:{theta:-1.0,phi:0.75,dist:14,drag:false,lx:0,ly:0}};
+    S.current=st;
+    function addObstacle(s,lat,kind){const i=Math.min(Math.round(s/STEP),course.N-1);const k=OBS_KIND[kind]||OBS_KIND.cone;const hw=course.cw[i]/2;lat=Math.min(Math.max(lat,-hw+k.r+0.05),hw-k.r-0.05);const nx=-Math.sin(course.hd[i]),ny=Math.cos(course.hd[i]);const m=obstacleMesh(kind);m.position.x=course.cx[i]+nx*lat;m.position.z=-(course.cy[i]+ny*lat);obsG.add(m);st.obstacles.push({s,lat,r:k.r,kind,mesh:m});}
+    function reset(){st.ped=new Ped(course.cx[0],course.cy[0],course.hd[0]);st.planner=new Planner();st.plan=null;st.t=0;st.done=false;st.trailPts=[];
+      for(const o of st.obstacles)obsG.remove(o.mesh);st.obstacles=[];for(const f of course.fixed)addObstacle(f.s,f.lat,f.kind);
+      setHud(h=>({...h,v:0,t:0,obs:st.obstacles.length,done:false}));st.snap=true;}
+    st.reset=reset;st.addObstacle=addObstacle;
+    st.dropAhead=(kind)=>{if(!st.ped||st.done)return;const s=st.ped.progress+5;if(s>course.finish-1)return;const i=Math.min(Math.round(s/STEP),course.N-1);const hw=course.cw[i]/2;const k=OBS_KIND[kind]||OBS_KIND.cone;const side=Math.random()<0.5?-1:1;const lat=side*Math.max(hw-k.r-0.1-Math.random()*0.3,0.3);addObstacle(s,lat,kind);setHud(h=>({...h,obs:st.obstacles.length}));showToast(`${kind[0].toUpperCase()+kind.slice(1)} ahead`,'5 m in front. The planner re-routes within 50 ms; the cane cue updates.');};
+    st.clear=()=>{for(const o of st.obstacles)obsG.remove(o.mesh);st.obstacles=[];for(const f of course.fixed)addObstacle(f.s,f.lat,f.kind);setHud(h=>({...h,obs:st.obstacles.length}));};
+    reset();
+    // click to place an obstacle
+    const ray=new THREE.Raycaster(),mouse=new THREE.Vector2(),plane=new THREE.Plane(new THREE.Vector3(0,1,0),0),hit=new THREE.Vector3();let dx0=0,dy0=0;
+    const el=renderer.domElement;
+    el.addEventListener('pointerdown',e=>{dx0=e.clientX;dy0=e.clientY;if(st.camMode==='orbit'){st.orbit.drag=true;st.orbit.lx=e.clientX;st.orbit.ly=e.clientY;}});
+    el.addEventListener('pointermove',e=>{if(st.orbit.drag){st.orbit.theta-=(e.clientX-st.orbit.lx)*0.006;st.orbit.phi=Math.min(Math.max(st.orbit.phi-(e.clientY-st.orbit.ly)*0.005,0.15),1.45);st.orbit.lx=e.clientX;st.orbit.ly=e.clientY;}});
+    window.addEventListener('pointerup',e=>{const moved=Math.hypot(e.clientX-dx0,e.clientY-dy0)>6;st.orbit.drag=false;if(moved||e.target!==el)return;
+      const r=el.getBoundingClientRect();mouse.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1);ray.setFromCamera(mouse,camera);if(!ray.ray.intersectPlane(plane,hit))return;
+      const wx=hit.x,wy=-hit.z;const s=project(course,wx,wy,st.ped.sHint+3);const i=Math.min(Math.round(s/STEP),course.N-1);if(Math.hypot(course.cx[i]-wx,course.cy[i]-wy)>course.cw[i]/2+1)return;
+      const lat=(wx-course.cx[i])*(-Math.sin(course.hd[i]))+(wy-course.cy[i])*Math.cos(course.hd[i]);
+      if(s<st.ped.progress+1.5){showToast('Too close','Place obstacles at least 1.5 m ahead.');return;}
+      addObstacle(s,lat,'box');setHud(h=>({...h,obs:st.obstacles.length}));showToast('Obstacle placed',`${(s-st.ped.progress).toFixed(1)} m ahead, ${lat>0?'left':'right'} side.`);});
+    el.addEventListener('wheel',e=>{if(st.camMode==='orbit')st.orbit.dist=Math.min(Math.max(st.orbit.dist*(1+e.deltaY*0.001),4),60);},{passive:true});
+    function resize(){const w=stage.clientWidth,hh=stage.clientHeight;renderer.setSize(w,hh,true);camera.aspect=w/hh;camera.updateProjectionMatrix();}
+    window.addEventListener('resize',resize);resize();
+    const DT=0.025;let last=performance.now();let hudAcc=0;
+    function sim(){const p=st.ped;if(st.done)return;st.ctrl+=DT;if(!st.plan||st.ctrl>=0.05-1e-9){st.ctrl=0;const obs=roadModel(course,p,st.obstacles);if(obs.s.length>=4)st.plan=st.planner.step(p,obs);}
+      p.tick(DT,st.plan);project(course,p.x,p.y,p.sHint);st.t+=DT;
+      if(p.progress>=course.finish-0.3&&p.v<0.05){st.done=true;setHud(h=>({...h,done:true}));showToast('Arrived',`${st.t.toFixed(1)} s · ${st.obstacles.length-course.fixed.length} obstacles added, none touched.`);}
+      if(st.trailPts.length===0||Math.hypot(p.x-st.trailPts[st.trailPts.length-1][0],p.y-st.trailPts[st.trailPts.length-1][1])>0.15){st.trailPts.push([p.x,p.y]);if(st.trailPts.length>800)st.trailPts.shift();}}
+    function ribbon(geo,xs,ys,world,W,colFn,y){const K=xs.length;if(K<2)return;const pos=new Float32Array(K*6),col=new Float32Array(K*6),idx=[];for(let i=0;i<K;i++){const a=Math.max(i-1,0),b=Math.min(i+1,K-1);const tx=xs[b]-xs[a],ty=ys[b]-ys[a];const n=Math.hypot(tx,ty)||1;const nx=-ty/n,ny=tx/n;const [wx,wy]=world(xs[i],ys[i]);const [nwx,nwy]=world(nx,ny,true);pos.set([wx+nwx*W,y,-(wy+nwy*W)],i*6);pos.set([wx-nwx*W,y,-(wy-nwy*W)],i*6+3);const c=colFn(i);col.set(c,i*6);col.set(c,i*6+3);if(i<K-1)idx.push(i*2,i*2+1,i*2+2,i*2+1,i*2+3,i*2+2);}geo.setAttribute('position',new THREE.BufferAttribute(pos,3));geo.setAttribute('color',new THREE.BufferAttribute(col,3));geo.setIndex(idx);geo.computeBoundingSphere();}
+    function draw(){const p=st.ped;const c=Math.cos(p.yaw),s=Math.sin(p.yaw);
+      pedG.position.set(p.x,0,-p.y);pedG.rotation.y=p.yaw;const gait=Math.min(p.v/P.vMax,1);const ph=st.t*6.5;pedG.position.y=Math.abs(Math.sin(ph))*0.025*gait;
+      const u=pedG.userData;u.legL.rotation.z=Math.sin(ph)*0.55*gait;u.legR.rotation.z=-Math.sin(ph)*0.55*gait;u.armL.rotation.z=-Math.sin(ph)*0.4*gait;
+      u.armR.rotation.z=-0.25+Math.sin(ph*0.5)*0.05;u.armR.rotation.y=Math.sin(st.t*3.2)*0.5*(0.3+0.7*gait);
+      if(st.plan){const pl=st.plan;ribbon(pathGeo,pl.px,pl.py,(x,y,vec)=>vec?[c*x-s*y,s*x+c*y]:[p.x+c*x-s*y,p.y+s*x+c*y],0.18,i=>{const t=Math.min(pl.vp[i]/P.vMax,1);return [0.18+0.82*(1-t),0.9,1-0.6*(1-t)];},0.12);}
+      if(st.trailPts.length>2){const xs=st.trailPts.map(q=>q[0]),ys=st.trailPts.map(q=>q[1]);ribbon(trailGeo,xs,ys,(x,y,vec)=>[x,y],0.12,()=>[0.3,0.49,1],0.09);}
+      // camera
+      const cx=p.x,cz=-p.y;
+      if(st.camMode==='follow'){const back=7,up=4.2,ahead=5;const pos=new THREE.Vector3(cx-Math.cos(p.yaw)*back,up,cz+Math.sin(p.yaw)*back);const tgt=new THREE.Vector3(cx+Math.cos(p.yaw)*ahead,0.6,cz-Math.sin(p.yaw)*ahead);if(st.snap){camera.position.copy(pos);st.camTarget.copy(tgt);st.snap=false;}else{camera.position.lerp(pos,0.06);st.camTarget.lerp(tgt,0.08);}camera.lookAt(st.camTarget);}
+      else if(st.camMode==='top'){camera.position.lerp(new THREE.Vector3(cx,26,cz+0.01),0.08);camera.lookAt(cx,0,cz);}
+      else{const o=st.orbit;camera.position.set(cx+o.dist*Math.cos(o.phi)*Math.cos(o.theta),o.dist*Math.sin(o.phi),cz+o.dist*Math.cos(o.phi)*Math.sin(o.theta));camera.lookAt(cx,0.8,cz);}
+      sun.position.set(cx+20,35,cz+15);sun.target.position.set(cx,0,cz);sun.target.updateMatrixWorld();
+      renderer.render(scene,camera);}
+    function frame(now){let dt=Math.min((now-last)/1000,0.1);last=now;if(!st.paused){st.acc+=dt;let n=0;while(st.acc>=DT&&n<8){sim();st.acc-=DT;n++;}}
+      draw();hudAcc+=dt;if(hudAcc>0.1){hudAcc=0;const p=st.ped,pl=st.plan;if(pl){setHud(h=>({...h,v:p.v,t:st.t,near:pl.nearest,ms:pl.ms,gap:pl.gapMin}));
+        // guidance cue as a cane would give it: direction + urgency
+        let kind='ok',title='Walk ahead',sub='Path is clear.',hapt=[0,0,1,0,0];const off=pl.cueY;
+        if(pl.blocked!==null&&pl.blocked<4){kind='bad';title='Stop';sub=`Way blocked ${pl.blocked.toFixed(1)} m ahead. Wait or turn back.`;hapt=[1,1,1,1,1];}
+        else if(Math.abs(off)>0.25){const left=off>0;kind=pl.nearest<2.5?'warn':'ok';title=left?'Bear left':'Bear right';sub=pl.nearest<3?`Obstacle ${pl.nearest.toFixed(1)} m ahead; step ${Math.abs(off).toFixed(1)} m ${left?'left':'right'}.`:`Path curves ${left?'left':'right'}.`;hapt=left?[1,1,0,0,0]:[0,0,0,1,1];if(Math.abs(off)>0.6)hapt=left?[1,0,0,0,0]:[0,0,0,0,1];}
+        else if(pl.gapMin<0.7){kind='warn';title='Narrow gap';sub=`${pl.gapMin.toFixed(1)} m wide just ahead. Slow down, keep centre.`;hapt=[0,1,1,1,0];}
+        else if(p.progress>=course.finish-3){kind='ok';title='Arriving';sub='Destination in a few steps.';hapt=[0,1,1,1,0];}
+        setCue({kind,title,sub,offset:off,hapt});}}
+      requestAnimationFrame(frame);}
+    requestAnimationFrame(frame);
+    showToast('TIDE Walk','The cane sees 12 m of sidewalk. Click the pavement ahead to place an obstacle.');
+    return ()=>{window.removeEventListener('resize',resize);renderer.dispose();};
+  },[]);
+  useEffect(()=>{if(S.current){S.current.camMode=cam;S.current.snap=true;}},[cam]);
+  useEffect(()=>{if(S.current)S.current.paused=paused;},[paused]);
+
+  const arrow=cue.kind==='bad'?'■':cue.title.includes('left')?'◀':cue.title.includes('right')?'▶':'▲';
+  return h(React.Fragment,null,
+    h('div',{id:'stage',ref:stageRef}),
+    h('div',{className:'hud'},
+      h('div',{className:'brand'},h('div',{className:'n'},'TIDE ',h('b',null,'WALK')),h('small',null,'assistive path planner · same core as the autocross controller')),
+      h('div',{className:'tiles'},
+        h('div',{className:'tile'},h('div',{className:'k'},'Pace'),h('div',{className:'v'},hud.v.toFixed(2),h('span',{className:'u'},'m/s'))),
+        h('div',{className:'tile'},h('div',{className:'k'},'Elapsed'),h('div',{className:'v'},hud.t.toFixed(1),h('span',{className:'u'},'s'))),
+        h('div',{className:'tile o'},h('div',{className:'k'},'Obstacles'),h('div',{className:'v'},hud.obs)),
+        h('div',{className:'tile a'},h('div',{className:'k'},'Nearest'),h('div',{className:'v'},isFinite(hud.near)?hud.near.toFixed(1):'—',h('span',{className:'u'},'m'))),
+        h('div',{className:'tile g'},h('div',{className:'k'},'Gap'),h('div',{className:'v'},hud.gap.toFixed(1),h('span',{className:'u'},'m'))),
+        h('div',{className:'tile'},h('div',{className:'k'},'Plan step'),h('div',{className:'v'},hud.ms.toFixed(1),h('span',{className:'u'},'ms'))))),
+    h('div',{className:'guide'},h('div',{className:'card'},
+      h('div',{className:'arrow '+cue.kind,style:{transform:`rotate(${Math.max(-40,Math.min(40,-cue.offset*45))}deg)`}},arrow),
+      h('div',null,h('div',{className:'t'},cue.title),h('div',{className:'s'},cue.sub),
+        h('div',{className:'haptic','aria-label':'haptic pattern on the cane handle'},cue.hapt.map((on,i)=>h('i',{key:i,className:(on?'on ':'')+(cue.kind==='bad'||cue.kind==='warn'?'warn':'')})))))),
+    h('div',{className:'dock'},
+      h('div',{className:'panel'},h('div',{className:'lbl'},'Scenario'),h('div',{className:'row'},
+        h('button',{className:'primary',onClick:()=>S.current&&S.current.reset()},'Restart walk'),
+        h('button',{onClick:()=>setPaused(p=>!p)},paused?'Resume':'Pause'))),
+      h('div',{className:'panel'},h('div',{className:'lbl'},'Put something in the way'),h('div',{className:'row'},
+        h('button',{className:'obs',onClick:()=>S.current.dropAhead('cone')},'Cone'),
+        h('button',{className:'obs',onClick:()=>S.current.dropAhead('person')},'Person'),
+        h('button',{className:'obs',onClick:()=>S.current.dropAhead('scooter')},'E-scooter'),
+        h('button',{className:'obs',onClick:()=>S.current.dropAhead('box')},'Box'),
+        h('button',{onClick:()=>S.current.clear()},'Clear'))),
+      h('div',{className:'panel'},h('div',{className:'lbl'},'Camera'),h('div',{className:'row'},
+        ['follow','top','orbit'].map(m=>h('button',{key:m,className:cam===m?'active':'',onClick:()=>setCam(m)},m[0].toUpperCase()+m.slice(1)))))),
+    h('div',{className:'note'},h('b',null,'Click the pavement'),' ahead of the walker to place an obstacle. The bottom card is what the cane handle would tell the user: direction by haptic pattern, urgency by colour. Same planner as the car: corridor from perceived edges, minimum-curvature path, curvature-limited pace, 50 ms re-plan.'),
+    toast&&h('div',{className:'toast show'},h('div',{className:'tt'},toast.t),h('div',null,toast.b)));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+</script>
+</body>
+</html>

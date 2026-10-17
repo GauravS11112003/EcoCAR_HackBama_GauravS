@@ -10,3 +10,4 @@ tracks/private
 tracks/*.png
 # team submissions (judges score them from here)
 teams
+.venv-mac/
